@@ -4,20 +4,33 @@ package outbound
 import (
 	"context"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 )
 
+// Tx adalah abstraksi transaksi DB.
+// Implementasinya adalah pgx.Tx di infra/db; di test bisa pakai mock.
+type Tx interface{}
+
 // IBookingRepository mengelola persistensi booking dan booking_item.
 type IBookingRepository interface {
-	// Create menyimpan booking + booking_item dalam transaksi yang sudah berjalan.
-	Create(ctx context.Context, tx pgx.Tx, booking entity.Booking, items []entity.BookingItem) error
+	// CreateBookingTx menjalankan fn dalam satu transaksi pgx.
+	// Pool.Begin, defer Rollback, dan Commit dikelola di sini.
+	// Usecase tidak perlu import pgxpool.
+	CreateBookingTx(
+		ctx context.Context,
+		req dto.CreateBookingRequest,
+		fn func(context.Context, Tx) (dto.CreateBookingResponse, error),
+	) (dto.CreateBookingResponse, error)
+
+	// Create menyimpan booking + booking_items dalam transaksi yang sudah berjalan.
+	Create(ctx context.Context, tx Tx, booking entity.Booking, items []entity.BookingItem) error
 
 	// GetByID mengembalikan booking beserta items-nya.
 	GetByID(ctx context.Context, bookingID string) (entity.Booking, []entity.BookingItem, error)
 
-	// UpdateStatus memperbarui status booking (HELD→PAID/EXPIRED/CANCELLED).
-	UpdateStatus(ctx context.Context, tx pgx.Tx, bookingID string, status entity.BookingStatus) error
+	// UpdateStatus memperbarui status booking.
+	UpdateStatus(ctx context.Context, tx Tx, bookingID string, status entity.BookingStatus) error
 
 	// ListExpiredHeld mengembalikan booking HELD yang payment_expires_at sudah lewat (untuk sweeper).
 	ListExpiredHeld(ctx context.Context, limit int) ([]entity.Booking, error)
@@ -25,37 +38,32 @@ type IBookingRepository interface {
 
 // IStockRepository mengelola perubahan available di ticket_category.
 type IStockRepository interface {
-	// HoldStock mengurangi available atomic dalam transaksi yang sudah berjalan.
-	// Mengembalikan error StockUnavailable jika 0 row terpengaruh.
-	HoldStock(ctx context.Context, tx pgx.Tx, items []entity.HoldItem) error
+	// HoldStock mengurangi available atomic — kondisi WHERE available >= qty.
+	// Return StockUnavailable bila 0 row terpengaruh.
+	HoldStock(ctx context.Context, tx Tx, items []entity.HoldItem) error
 
-	// ReleaseStock mengembalikan hold (available += qty) dalam transaksi.
-	ReleaseStock(ctx context.Context, tx pgx.Tx, bookingID string) error
+	// ReleaseStock mengembalikan hold (available += qty per item) dalam transaksi.
+	ReleaseStock(ctx context.Context, tx Tx, bookingID string) error
 
-	// GetAvailableByEvent mengembalikan semua kategori dan available untuk suatu event.
+	// GetAvailableByEvent mengembalikan snapshot stok per kategori.
 	GetAvailableByEvent(ctx context.Context, eventID string) ([]entity.CategoryStock, error)
 
-	// CountNIKBookings menghitung tiket aktif/terbayar per (eventID, nik) dengan SELECT FOR UPDATE.
-	CountNIKBookings(ctx context.Context, tx pgx.Tx, eventID, nik string) (int, error)
+	// GetPriceMap mengembalikan map[categoryID]price untuk price_snapshot.
+	GetPriceMap(ctx context.Context, eventID string) (map[string]int64, error)
+
+	// CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik) — SELECT FOR UPDATE.
+	CountNIKBookings(ctx context.Context, tx Tx, eventID, nik string) (int, error)
 }
 
 // IDukcapilClient memanggil Dukcapil mock service.
 type IDukcapilClient interface {
-	// Verify mengembalikan true jika keempat field cocok dengan record Dukcapil.
-	// Jika service down dan failOpen=true → return true + log warning.
 	Verify(ctx context.Context, nik, nama, tglLahir, namaIbu string) (bool, error)
 }
 
-// ICacheRepository mengelola state di Valkey (Access Token, Pub/Sub stok).
+// ICacheRepository mengelola state di Valkey.
 type ICacheRepository interface {
-	// ValidateAccessToken memverifikasi JWT dan mengembalikan claims-nya.
 	ValidateAccessToken(ctx context.Context, tokenStr string) (*AccessTokenClaims, error)
-
-	// PublishStockChanged mempublish pesan ke channel Redis Pub/Sub untuk SSE broadcast.
 	PublishStockChanged(ctx context.Context, eventID string, payload []byte) error
-
-	// SubscribeStockChanged subscribe ke channel Redis Pub/Sub.
-	// Mengembalikan channel pesan dan unsubscribe func.
 	SubscribeStockChanged(ctx context.Context, eventID string) (<-chan []byte, func(), error)
 }
 
@@ -71,6 +79,6 @@ type IEventProducer interface {
 type AccessTokenClaims struct {
 	EventID             string
 	QueueToken          string
-	NIK                 string // kosong untuk guest
-	BookingTTLExpiresAt int64  // unix timestamp
+	NIK                 string
+	BookingTTLExpiresAt int64
 }

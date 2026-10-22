@@ -12,7 +12,6 @@ const (
 	BookingStatusExpired   BookingStatus = "EXPIRED"
 	BookingStatusCancelled BookingStatus = "CANCELLED"
 )
-
 // Booking adalah agregat utama — satu transaksi booking tiket.
 type Booking struct {
 	ID               string

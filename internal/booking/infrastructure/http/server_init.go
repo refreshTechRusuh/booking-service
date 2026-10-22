@@ -14,15 +14,15 @@ import (
 	vk "github.com/valkey-io/valkey-go"
 )
 
-// NewWiredHandler mewiring semua dependency untuk booking domain dan mengembalikan Handler.
-// Dipanggil dari delivery/server.go.
-func NewWiredHandler(
+// NewWiredHandlerWithUC mewiring semua dependency dan mengembalikan Handler + UseCase.
+// UseCase diekspos agar cmd/main.go bisa start sweeper.
+func NewWiredHandlerWithUC(
 	_ context.Context,
 	cfg *config.Config,
 	pool *pgxpool.Pool,
 	valkeyClient vk.Client,
 	producer *kafka.Producer,
-) *Handler {
+) (*Handler, *usecase.BookingUsecase) {
 	log := slog.Default()
 
 	bookingRepo := bookingdb.NewBookingRepository(pool)
@@ -32,5 +32,5 @@ func NewWiredHandler(
 	eventProducer := event.NewKafkaProducer(producer, log)
 
 	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, log)
-	return NewHandler(uc)
+	return NewHandler(uc), uc
 }

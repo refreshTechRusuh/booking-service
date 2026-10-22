@@ -24,45 +24,41 @@ func main() {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
-
 	config.SetupLogger(cfg.Log)
 
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
 
-	// ---- PostgreSQL ----
 	pool, err := pkgdb.NewPool(rootCtx, cfg.DB)
 	if err != nil {
 		slog.Error("failed to connect to postgres", "err", err)
 		os.Exit(1)
 	}
 
-	// ---- Valkey ----
 	valkeyClient, err := pkgvalkey.NewClient(cfg.Valkey)
 	if err != nil {
 		slog.Error("failed to connect to valkey", "err", err)
 		os.Exit(1)
 	}
 
-	// ---- Kafka Producer ----
 	producer := kafka.NewProducer(cfg.Kafka, slog.Default())
 
-	// ---- Wiring ----
-	mux, closeDeps, err := delivery.New(rootCtx, cfg, pool, valkeyClient, producer)
+	app, err := delivery.New(rootCtx, cfg, pool, valkeyClient, producer)
 	if err != nil {
 		slog.Error("failed to init server", "err", err)
 		os.Exit(1)
 	}
-	defer closeDeps()
+	defer app.Close()
 
-	// ---- Middleware ----
+	// Start TTL sweeper goroutine
+	app.Usecase.StartSweeper(rootCtx)
+
 	handler := middleware.Chain(
-		mux,
+		app.Mux,
 		middleware.TransactionID,
 		middleware.OptionalAuth(cfg.JWT.AccessTokenSecret),
 	)
 
-	// ---- HTTP Server ----
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.App.Port),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -77,14 +73,12 @@ func main() {
 		}
 	}()
 
-	// ---- Graceful Shutdown ----
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	slog.Info("shutting down...")
 	cancelRoot()
-
 	shutCtx, cancelShut := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelShut()
 	if err := srv.Shutdown(shutCtx); err != nil {

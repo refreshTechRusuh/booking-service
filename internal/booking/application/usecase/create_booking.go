@@ -3,27 +3,30 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
 	"github.com/refreshTechRusuh/booking-service/pkg/apperror"
+	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
 )
 
 const (
-	maxTicketsPerBooking = 3
-	maxTicketsPerNIK     = 3
-	bookingTTLMinutes    = 10
+	maxTicketsPerBooking  = 3
+	maxTicketsPerNIK      = 3
+	paymentTTLMinutes     = 10
 	backDisabledThreshold = 30 // seconds
 )
 
 // BookingUsecase mengimplementasikan inbound.IBookingUsecase.
 type BookingUsecase struct {
-	pool      *pgxpool.Pool
+	pool        *pgxpool.Pool
 	bookingRepo outbound.IBookingRepository
 	stockRepo   outbound.IStockRepository
 	dukcapil    outbound.IDukcapilClient
@@ -42,40 +45,25 @@ func NewBookingUsecase(
 	log *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
-		pool:        pool,
-		bookingRepo: bookingRepo,
-		stockRepo:   stockRepo,
-		dukcapil:    dukcapil,
-		cache:       cache,
-		producer:    producer,
-		log:         log,
+		pool: pool, bookingRepo: bookingRepo, stockRepo: stockRepo,
+		dukcapil: dukcapil, cache: cache, producer: producer, log: log,
 	}
 }
 
 // CreateBooking mengeksekusi 6 langkah validasi + hold stok dalam satu transaksi pgx.
 func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookingRequest) (dto.CreateBookingResponse, error) {
-	// ── 1. Validasi Access Token (sudah dilakukan di middleware, ambil claims dari ctx)
-	// Access Token diverifikasi di RequireAccessToken middleware sebelum request masuk ke sini.
-	// Claims sudah ada di context — usecase tinggal pakai req.EventIDFromToken, req.BookingTTLExpiresAt.
-
-	// ── 2. Validasi email ada (dilakukan validator di handler)
-
-	// ── 3. Validasi format NIK (len=16) dilakukan validator di handler
-
-	// ── 4-6. Jalankan dalam satu transaksi pgx
-	tx, err := u.pool.Begin(ctx)
-	if err != nil {
-		return dto.CreateBookingResponse{}, apperror.Internal(fmt.Errorf("begin tx: %w", err))
+	// Validasi: eventId dari Access Token harus cocok dengan eventId di body.
+	if req.EventIDFromToken != "" && req.EventIDFromToken != req.EventID {
+		return dto.CreateBookingResponse{}, apperror.TokenInvalid()
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// ── 4. Verifikasi Dukcapil per attendee (defense-in-depth, tanpa OTP)
+	// ── 4. Verifikasi Dukcapil per attendee SEBELUM buka transaksi (network call, tidak perlu tx)
 	for _, item := range req.Items {
 		for _, a := range item.Attendees {
-			valid, err := u.dukcapil.Verify(ctx, a.NIK, a.Nama, a.TglLahir, a.NamaIbu)
-			if err != nil {
-				u.log.WarnContext(ctx, "dukcapil verify error (fail-open behavior applies)", "nik", a.NIK, "err", err)
-				// failOpen dikontrol di DukcapilClient — jika err masih ada berarti fail-closed
+			valid, verifyErr := u.dukcapil.Verify(ctx, a.NIK, a.Nama, a.TglLahir, a.NamaIbu)
+			if verifyErr != nil {
+				u.log.WarnContext(ctx, "dukcapil verify error",
+					slog.String("nik", a.NIK), slog.Any("err", verifyErr))
 				return dto.CreateBookingResponse{}, apperror.NIKInvalid(a.NIK)
 			}
 			if !valid {
@@ -85,82 +73,89 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 	}
 
 	// ── 5. Total tiket ≤ 3 per booking
-	if req.TotalTickets() > maxTicketsPerBooking {
+	if total := req.TotalTickets(); total > maxTicketsPerBooking {
 		return dto.CreateBookingResponse{}, apperror.New(apperror.ErrValidation,
-			fmt.Sprintf("total tiket maksimal %d per booking", maxTicketsPerBooking))
+			fmt.Sprintf("total tiket maksimal %d per booking, diterima %d", maxTicketsPerBooking, total))
 	}
 
-	// ── 6a. Kuota per-NIK: hitung tiket HELD/PAID per (eventId, nik) dengan FOR UPDATE
-	nikQtyMap := req.NIKQtyMap()
-	for nik, qtyThisBooking := range nikQtyMap {
-		existing, err := u.stockRepo.CountNIKBookings(ctx, tx, req.EventID, nik)
+	// ── 6a-6b. Jalankan dalam satu transaksi pgx via repository
+	return u.bookingRepo.CreateBookingTx(ctx, req, func(ctx context.Context, tx outbound.Tx) (dto.CreateBookingResponse, error) {
+		// 6a. Kuota per-NIK
+		for nik, qtyThisBooking := range req.NIKQtyMap() {
+			existing, err := u.stockRepo.CountNIKBookings(ctx, tx, req.EventID, nik)
+			if err != nil {
+				return dto.CreateBookingResponse{}, apperror.Internal(err)
+			}
+			if existing+qtyThisBooking > maxTicketsPerNIK {
+				return dto.CreateBookingResponse{}, apperror.QuotaExceeded()
+			}
+		}
+
+		// 6b. Hold stok atomic
+		holdItems := req.ToHoldItems()
+		if err := u.stockRepo.HoldStock(ctx, tx, holdItems); err != nil {
+			return dto.CreateBookingResponse{}, err
+		}
+
+		// Ambil harga per kategori untuk price_snapshot
+		priceMap, err := u.stockRepo.GetPriceMap(ctx, req.EventID)
 		if err != nil {
 			return dto.CreateBookingResponse{}, apperror.Internal(err)
 		}
-		if existing+qtyThisBooking > maxTicketsPerNIK {
-			return dto.CreateBookingResponse{}, apperror.QuotaExceeded()
+
+		// Buat entity booking + items
+		now := time.Now()
+		bookingExpiresAt := time.Unix(req.BookingTTLExpiresAt, 0)
+		if req.BookingTTLExpiresAt == 0 {
+			bookingExpiresAt = now.Add(5 * time.Minute)
 		}
-	}
+		paymentExpiresAt := now.Add(paymentTTLMinutes * time.Minute)
 
-	// ── 6b. Hold stok atomic — satu UPDATE per kategori, rollback jika gagal
-	holdItems := req.ToHoldItems()
-	if err := u.stockRepo.HoldStock(ctx, tx, holdItems); err != nil {
-		return dto.CreateBookingResponse{}, err // StockUnavailable atau internal
-	}
-
-	// ── Simpan booking + booking_items
-	now := time.Now()
-	bookingExpiresAt := time.Unix(req.BookingTTLExpiresAt, 0)
-	paymentExpiresAt := now.Add(bookingTTLMinutes * time.Minute)
-
-	bookingID := newUUID()
-	booking := entity.Booking{
-		ID:               bookingID,
-		UserID:           req.UserID,
-		EventID:          req.EventID,
-		Email:            req.Email,
-		Status:           entity.BookingStatusHeld,
-		BookingExpiresAt: &bookingExpiresAt,
-		PaymentExpiresAt: &paymentExpiresAt,
-		CreatedAt:        now,
-	}
-
-	var items []entity.BookingItem
-	var total int64
-	for _, item := range req.Items {
-		for _, a := range item.Attendees {
-			price := req.PriceSnapshot(item.CategoryID) // harga saat booking
-			items = append(items, entity.BookingItem{
-				ID:            newUUID(),
-				BookingID:     bookingID,
-				CategoryID:    item.CategoryID,
-				NIK:           a.NIK,
-				PriceSnapshot: price,
-			})
-			total += price
+		bookingID := uuid.New().String()
+		booking := entity.Booking{
+			ID:               bookingID,
+			UserID:           req.UserID,
+			EventID:          req.EventID,
+			Email:            req.Email,
+			Status:           entity.BookingStatusHeld,
+			BookingExpiresAt: &bookingExpiresAt,
+			PaymentExpiresAt: &paymentExpiresAt,
+			CreatedAt:        now,
 		}
-	}
 
-	if err := u.bookingRepo.Create(ctx, tx, booking, items); err != nil {
-		return dto.CreateBookingResponse{}, apperror.Internal(err)
-	}
+		var items []entity.BookingItem
+		var totalAmount int64
+		for _, item := range req.Items {
+			price := priceMap[item.CategoryID]
+			for _, a := range item.Attendees {
+				items = append(items, entity.BookingItem{
+					ID:            uuid.New().String(),
+					BookingID:     bookingID,
+					CategoryID:    item.CategoryID,
+					NIK:           a.NIK,
+					PriceSnapshot: price,
+				})
+				totalAmount += price
+			}
+		}
 
-	if err := tx.Commit(ctx); err != nil {
-		return dto.CreateBookingResponse{}, apperror.Internal(fmt.Errorf("commit tx: %w", err))
-	}
+		if err := u.bookingRepo.Create(ctx, tx, booking, items); err != nil {
+			return dto.CreateBookingResponse{}, apperror.Internal(err)
+		}
 
-	// ── Publish events (setelah commit — best-effort, tidak rollback booking)
-	go u.publishPostBooking(context.WithoutCancel(ctx), booking, items, total)
+		// Publish events setelah commit (best-effort, tidak rollback booking)
+		go u.publishPostBooking(context.WithoutCancel(ctx), booking, items, holdItems, totalAmount)
 
-	return dto.CreateBookingResponse{
-		BookingID:        bookingID,
-		Status:           string(entity.BookingStatusHeld),
-		Total:            total,
-		PaymentExpiresAt: paymentExpiresAt.UTC().Format(time.RFC3339),
-	}, nil
+		return dto.CreateBookingResponse{
+			BookingID:        bookingID,
+			Status:           string(entity.BookingStatusHeld),
+			Total:            totalAmount,
+			PaymentExpiresAt: paymentExpiresAt.UTC().Format(time.RFC3339),
+		}, nil
+	})
 }
 
-// GetBooking mengembalikan status booking + sisa TTL + backDisabled.
+// GetBooking mengembalikan status + sisa TTL + backDisabled.
 func (u *BookingUsecase) GetBooking(ctx context.Context, bookingID string) (dto.BookingStatusResponse, error) {
 	booking, _, err := u.bookingRepo.GetByID(ctx, bookingID)
 	if err != nil {
@@ -203,11 +198,12 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 					return
 				}
 				var ev dto.StockEvent
-				if err := parseJSON(msg, &ev); err != nil {
+				if err := json.Unmarshal(msg, &ev); err != nil {
+					u.log.WarnContext(ctx, "stock event unmarshal error", slog.Any("err", err))
 					continue
 				}
 				if len(categoryIDs) > 0 && !containsString(categoryIDs, ev.CategoryID) {
-					continue // filter kategori
+					continue
 				}
 				select {
 				case out <- ev:
@@ -221,28 +217,49 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 	return out, nil
 }
 
-// ---- post-booking side effects (async, non-blocking) -------------------------
+// ---- Post-booking side effects -----------------------------------------------
 
-func (u *BookingUsecase) publishPostBooking(ctx context.Context, b entity.Booking, items []entity.BookingItem, total int64) {
-	// booking.created → Notification Worker (email #1)
-	// stock.changed (HOLD) → Queue Service cache stok + SSE broadcast
-	// (implementasi lengkap di Task B2-2B.5)
-	u.log.InfoContext(ctx, "post booking publish (placeholder)", "bookingId", b.ID)
+func (u *BookingUsecase) publishPostBooking(
+	ctx context.Context,
+	b entity.Booking,
+	items []entity.BookingItem,
+	holdItems []entity.HoldItem,
+	total int64,
+) {
+	// 1. booking.created → Notification Worker (email #1 instruksi bayar)
+	itemEvents := make([]kafka.BookingItemEvent, 0, len(items))
+	for _, it := range items {
+		itemEvents = append(itemEvents, kafka.BookingItemEvent{
+			CategoryID: it.CategoryID,
+			NIK:        it.NIK,
+			Price:      it.PriceSnapshot,
+		})
+	}
+	if err := u.producer.PublishBookingCreated(ctx, b.EventID, kafka.BookingCreatedEvent{
+		BookingID:   b.ID,
+		EventID:     b.EventID,
+		Email:       b.Email,
+		Items:       itemEvents,
+		TotalAmount: total,
+	}); err != nil {
+		u.log.ErrorContext(ctx, "publish booking.created failed", slog.Any("err", err))
+	}
+
+	// 2. stock.changed (reason=HOLD) → Queue Service update cache stok + SSE broadcast
+	for _, h := range holdItems {
+		if err := u.producer.PublishStockChanged(ctx, b.EventID, kafka.StockChangedEvent{
+			EventID:    b.EventID,
+			CategoryID: h.CategoryID,
+			Delta:      -h.Qty, // negatif = hold
+			Available:  -1,     // -1 = "tidak tahu nilai sekarang"; Queue hitung dari DB bila perlu
+			Reason:     "HOLD",
+		}); err != nil {
+			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", err))
+		}
+	}
 }
 
-// ---- helpers -----------------------------------------------------------------
-
-func newUUID() string {
-	// TODO: ganti dengan uuid library: github.com/google/uuid
-	return fmt.Sprintf("bkg-%d", time.Now().UnixNano())
-}
-
-func parseJSON(b []byte, v any) error {
-	import_encoding_json() // placeholder
-	return nil
-}
-
-func import_encoding_json() {} // placeholder — hapus, gunakan encoding/json langsung
+// ---- Helpers -----------------------------------------------------------------
 
 func containsString(slice []string, s string) bool {
 	for _, v := range slice {
