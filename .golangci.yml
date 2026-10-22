@@ -1,0 +1,48 @@
+version: "2"
+linters:
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # ADR-004: domain/ tidak boleh import application/ atau infrastructure/.
+        domain-stays-out-of-inner-layers:
+          files:
+            - "**/internal/*/domain/**"
+          list-mode: lax
+          deny:
+            - pkg: github.com/refreshTechRusuh/booking-service/internal
+              desc: "domain/ must not import application/ or infrastructure/ (ADR-004)"
+          allow:
+            - github.com/refreshTechRusuh/booking-service/internal/booking/domain
+            - github.com/refreshTechRusuh/booking-service/pkg
+
+        # ADR-004: net/http dan valkey-go hanya boleh di infrastructure/.
+        infra-clients-only-in-infrastructure:
+          files:
+            - "**/internal/**"
+            - "!$test"
+            - "!**/internal/*/infrastructure/**"
+            - "!**/internal/delivery/**"
+          list-mode: lax
+          deny:
+            - pkg: net/http
+              desc: "HTTP client/server belongs in infrastructure/ (ADR-004)"
+            - pkg: github.com/valkey-io/valkey-go
+              desc: "use pkg/valkey from infrastructure/ (ADR-004)"
+            - pkg: github.com/jackc/pgx/v5
+              desc: "use pkg/db from infrastructure/ (ADR-004)"
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go$
+formatters:
+  exclusions:
+    generated: lax
