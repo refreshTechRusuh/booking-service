@@ -18,6 +18,7 @@ type Config struct {
 	Kafka    KafkaConfig
 	JWT      JWTConfig
 	Dukcapil DukcapilConfig
+	EventSvc EventServiceConfig
 	Midtrans MidtransConfig
 	Email    EmailConfig
 	SSE      SSEConfig
@@ -66,6 +67,10 @@ type DukcapilConfig struct {
 	BaseURL    string
 	TimeoutMs  int
 	FailOpen   bool
+}
+
+type EventServiceConfig struct {
+	BaseURL string
 }
 
 type MidtransConfig struct {
@@ -127,6 +132,9 @@ func Load() (*Config, error) {
 			BaseURL:   getEnv("DUKCAPIL_BASE_URL", "http://localhost:8085"),
 			TimeoutMs: getEnvInt("DUKCAPIL_TIMEOUT_MS", 3000),
 			FailOpen:  getEnvBool("DUKCAPIL_FAIL_OPEN", true),
+		},
+		EventSvc: EventServiceConfig{
+			BaseURL: getEnv("EVENT_SERVICE_URL", "http://localhost:8082"),
 		},
 		Midtrans: MidtransConfig{
 			ServerKey: mustEnv("MIDTRANS_SERVER_KEY"),

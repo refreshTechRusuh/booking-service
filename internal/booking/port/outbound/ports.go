@@ -34,6 +34,10 @@ type IBookingRepository interface {
 
 	// ListExpiredHeld mengembalikan booking HELD yang payment_expires_at sudah lewat (untuk sweeper).
 	ListExpiredHeld(ctx context.Context, limit int) ([]entity.Booking, error)
+
+	// HasActiveHeld mengembalikan true bila masih ada booking HELD aktif untuk event ini.
+	// Dipakai sweeper untuk deteksi sold-out: hanya mark sold-out bila stok=0 DAN tidak ada HELD.
+	HasActiveHeld(ctx context.Context, eventID string) (bool, error)
 }
 
 // IStockRepository mengelola perubahan available di ticket_category.
@@ -65,6 +69,13 @@ type ICacheRepository interface {
 	ValidateAccessToken(ctx context.Context, tokenStr string) (*AccessTokenClaims, error)
 	PublishStockChanged(ctx context.Context, eventID string, payload []byte) error
 	SubscribeStockChanged(ctx context.Context, eventID string) (<-chan []byte, func(), error)
+}
+
+// IEventServiceClient memanggil event-service via HTTP internal API.
+type IEventServiceClient interface {
+	// MarkSoldOut memanggil POST /internal/events/{eventId}/sold-out ke event-service.
+	// Idempoten: event-service mengabaikan bila sudah sold-out.
+	MarkSoldOut(ctx context.Context, eventID string) error
 }
 
 // IEventProducer mempublish event ke Kafka.

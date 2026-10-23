@@ -2,9 +2,11 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
+	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
 )
@@ -55,9 +57,8 @@ func (u *BookingUsecase) sweepExpiredBookings(ctx context.Context) {
 }
 
 // expireBooking mengeksekusi satu booking expired:
-// UPDATE status=EXPIRED + ReleaseStock + publish events.
+// UPDATE status=EXPIRED + ReleaseStock + publish Kafka + publish Redis Pub/Sub + sold-out detection.
 func (u *BookingUsecase) expireBooking(ctx context.Context, bookingID, eventID string) error {
-	// Gunakan CreateBookingTx-like pattern via pool langsung (sweeper punya pool)
 	tx, err := u.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -71,27 +72,108 @@ func (u *BookingUsecase) expireBooking(ctx context.Context, bookingID, eventID s
 		return err
 	}
 
-	// Baca items untuk Kafka payload (masih dalam tx)
+	// Baca items untuk Kafka payload (masih dalam tx, sebelum commit)
 	_, items, _ := u.bookingRepo.GetByID(ctx, bookingID)
 
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	// Publish events setelah commit
-	go func() {
-		ctx2 := context.WithoutCancel(ctx)
-		u.producer.PublishSlotReleased(ctx2, eventID, kafka.SlotReleasedEvent{
-			BookingID: bookingID, EventID: eventID, Reason: "BOOKING_TTL",
-		})
-		for _, item := range items {
-			u.producer.PublishStockChanged(ctx2, eventID, kafka.StockChangedEvent{
-				EventID: eventID, CategoryID: item.CategoryID, Delta: 1, Available: -1, Reason: "RELEASE",
-			})
-		}
-		u.log.InfoContext(ctx2, "booking expired, stok dirilis",
-			slog.String("bookingId", bookingID), slog.Int("items", len(items)))
-	}()
+	// Publish events setelah commit (best-effort, tidak rollback expire)
+	go u.postExpirePublish(context.WithoutCancel(ctx), bookingID, eventID, items)
 
 	return nil
+}
+
+// postExpirePublish mempublish semua side-effect setelah booking di-expire.
+// Berjalan sebagai goroutine terpisah agar tidak memblokir sweeper loop.
+func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, eventID string, items []entity.BookingItem) {
+	// 1. Kafka: slot.released → Queue Service promosikan antrian berikutnya.
+	if err := u.producer.PublishSlotReleased(ctx, eventID, kafka.SlotReleasedEvent{
+		BookingID: bookingID, EventID: eventID, Reason: "BOOKING_TTL",
+	}); err != nil {
+		u.log.ErrorContext(ctx, "publish slot.released failed", slog.Any("err", err))
+	}
+
+	// 2. Ambil snapshot stok terkini setelah release untuk Pub/Sub + Kafka.
+	stocks, err := u.stockRepo.GetAvailableByEvent(ctx, eventID)
+	if err != nil {
+		u.log.WarnContext(ctx, "get available after release failed", slog.Any("err", err))
+	}
+	stockMap := make(map[string]int, len(stocks))
+	for _, s := range stocks {
+		stockMap[s.CategoryID] = s.Available
+	}
+
+	// 3. Per-kategori: publish Kafka stock.changed + Redis Pub/Sub (→ SSE ke klien).
+	for _, item := range items {
+		available := stockMap[item.CategoryID] // 0 bila tidak ditemukan
+
+		// Kafka: stock.changed (reason=RELEASE) dengan nilai available aktual.
+		if pubErr := u.producer.PublishStockChanged(ctx, eventID, kafka.StockChangedEvent{
+			EventID:    eventID,
+			CategoryID: item.CategoryID,
+			Delta:      1,
+			Available:  available,
+			Reason:     "RELEASE",
+		}); pubErr != nil {
+			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", pubErr))
+		}
+
+		// Redis Pub/Sub: kirim frame stok terbaru langsung ke SSE subscriber.
+		ev := dto.StockEvent{
+			EventID:    eventID,
+			CategoryID: item.CategoryID,
+			Available:  available,
+		}
+		if b, marshalErr := json.Marshal(ev); marshalErr == nil {
+			if pubErr := u.cache.PublishStockChanged(ctx, eventID, b); pubErr != nil {
+				u.log.WarnContext(ctx, "redis publish stock.changed failed", slog.Any("err", pubErr))
+			}
+		}
+	}
+
+	// 4. Sold-out detection: hanya mark sold-out bila SEMUA available=0 DAN tidak ada HELD aktif.
+	allZero := len(stocks) > 0
+	for _, s := range stocks {
+		if s.Available > 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		hasHeld, checkErr := u.bookingRepo.HasActiveHeld(ctx, eventID)
+		if checkErr != nil {
+			u.log.WarnContext(ctx, "has active held check failed", slog.Any("err", checkErr))
+		}
+		if !hasHeld {
+			// Semua stok 0 dan tidak ada HELD aktif → event benar-benar habis.
+			u.log.InfoContext(ctx, "event sold-out detected", slog.String("eventId", eventID))
+
+			// 4a. Beritahu event-service untuk update status event (idempoten).
+			if markErr := u.eventClient.MarkSoldOut(ctx, eventID); markErr != nil {
+				u.log.WarnContext(ctx, "mark sold-out failed", slog.Any("err", markErr))
+			}
+
+			// 4b. Broadcast sold-out frame ke SSE subscriber via Redis Pub/Sub.
+			soldOutEv := dto.StockEvent{EventID: eventID, SoldOut: true}
+			if b, marshalErr := json.Marshal(soldOutEv); marshalErr == nil {
+				if pubErr := u.cache.PublishStockChanged(ctx, eventID, b); pubErr != nil {
+					u.log.WarnContext(ctx, "redis publish sold-out failed", slog.Any("err", pubErr))
+				}
+			}
+
+			// 4c. Kafka: event.sold_out → downstream consumers.
+			if pubErr := u.producer.PublishEventSoldOut(ctx, eventID, kafka.EventSoldOutEvent{
+				EventID: eventID,
+			}); pubErr != nil {
+				u.log.ErrorContext(ctx, "publish event.sold_out failed", slog.Any("err", pubErr))
+			}
+		}
+	}
+
+	u.log.InfoContext(ctx, "booking expired processed",
+		slog.String("bookingId", bookingID),
+		slog.String("eventId", eventID),
+		slog.Int("items", len(items)))
 }

@@ -55,6 +55,13 @@ type StockEvent struct {
 	EventID    string `json:"eventId"`
 	CategoryID string `json:"categoryId"`
 	Available  int    `json:"available"`
+	SoldOut    bool   `json:"soldOut,omitempty"` // true bila event ini sold-out
+}
+
+// StockSnapshot adalah initial snapshot seluruh kategori saat SSE connect.
+type StockSnapshot struct {
+	EventID    string       `json:"eventId"`
+	Categories []StockEvent `json:"categories"`
 }
 
 // ---- Helpers ---------------------------------------------------------------

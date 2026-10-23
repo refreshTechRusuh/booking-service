@@ -32,6 +32,7 @@ type BookingUsecase struct {
 	dukcapil    outbound.IDukcapilClient
 	cache       outbound.ICacheRepository
 	producer    outbound.IEventProducer
+	eventClient outbound.IEventServiceClient
 	log         *slog.Logger
 }
 
@@ -42,11 +43,13 @@ func NewBookingUsecase(
 	dukcapil outbound.IDukcapilClient,
 	cache outbound.ICacheRepository,
 	producer outbound.IEventProducer,
+	eventClient outbound.IEventServiceClient,
 	log *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
 		pool: pool, bookingRepo: bookingRepo, stockRepo: stockRepo,
-		dukcapil: dukcapil, cache: cache, producer: producer, log: log,
+		dukcapil: dukcapil, cache: cache, producer: producer,
+		eventClient: eventClient, log: log,
 	}
 }
 
@@ -179,16 +182,56 @@ func (u *BookingUsecase) GetBooking(ctx context.Context, bookingID string) (dto.
 }
 
 // StreamStock mengembalikan channel event stok dari Redis Pub/Sub.
+// Initial snapshot dikirim terlebih dahulu sebelum subscribe, sehingga client
+// tidak kehilangan state awal saat koneksi baru.
 func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, categoryIDs []string) (<-chan dto.StockEvent, error) {
+	// Ambil snapshot awal dari DB — baca sebelum subscribe agar tidak ada gap.
+	snapshot, err := u.stockRepo.GetAvailableByEvent(ctx, eventID)
+	if err != nil {
+		return nil, apperror.Internal(err)
+	}
+
 	msgCh, unsub, err := u.cache.SubscribeStockChanged(ctx, eventID)
 	if err != nil {
 		return nil, apperror.Internal(err)
 	}
 
-	out := make(chan dto.StockEvent, 16)
+	out := make(chan dto.StockEvent, 32)
+
 	go func() {
 		defer unsub()
 		defer close(out)
+
+		// 1. Kirim initial snapshot ke client.
+		allSoldOut := len(snapshot) > 0
+		for _, cs := range snapshot {
+			if cs.Available > 0 {
+				allSoldOut = false
+			}
+			ev := dto.StockEvent{
+				EventID:    eventID,
+				CategoryID: cs.CategoryID,
+				Available:  cs.Available,
+			}
+			if len(categoryIDs) > 0 && !containsString(categoryIDs, cs.CategoryID) {
+				continue
+			}
+			select {
+			case out <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+		// Bila semua kategori sudah 0 saat connect, kirim sold-out frame.
+		if allSoldOut && len(snapshot) > 0 {
+			select {
+			case out <- dto.StockEvent{EventID: eventID, SoldOut: true}:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		// 2. Subscribe ke Redis Pub/Sub untuk update selanjutnya.
 		for {
 			select {
 			case <-ctx.Done():
@@ -202,7 +245,7 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 					u.log.WarnContext(ctx, "stock event unmarshal error", slog.Any("err", err))
 					continue
 				}
-				if len(categoryIDs) > 0 && !containsString(categoryIDs, ev.CategoryID) {
+				if len(categoryIDs) > 0 && !ev.SoldOut && !containsString(categoryIDs, ev.CategoryID) {
 					continue
 				}
 				select {

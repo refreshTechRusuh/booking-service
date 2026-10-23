@@ -128,7 +128,18 @@ func (r *BookingRepository) ListExpiredHeld(ctx context.Context, limit int) ([]e
 	return result, nil
 }
 
-// ---- StockRepository --------------------------------------------------------
+// HasActiveHeld mengembalikan true bila masih ada booking HELD aktif untuk event ini.
+func (r *BookingRepository) HasActiveHeld(ctx context.Context, eventID string) (bool, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM booking
+		WHERE event_id = $1 AND status = 'HELD' AND payment_expires_at > NOW()
+		LIMIT 1`, eventID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("has active held: %w", err)
+	}
+	return count > 0, nil
+}
 
 type StockRepository struct{ pool *pgxpool.Pool }
 

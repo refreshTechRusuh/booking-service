@@ -73,6 +73,7 @@ func (r *mockBookingRepo) UpdateStatus(_ context.Context, _ outbound.Tx, id stri
 	return nil
 }
 
+// ListExpiredHeld mengembalikan booking HELD yang TTL-nya habis.
 func (r *mockBookingRepo) ListExpiredHeld(_ context.Context, limit int) ([]entity.Booking, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -86,6 +87,18 @@ func (r *mockBookingRepo) ListExpiredHeld(_ context.Context, limit int) ([]entit
 		}
 	}
 	return result, nil
+}
+
+// HasActiveHeld — no active held bookings in tests (simplification).
+func (r *mockBookingRepo) HasActiveHeld(_ context.Context, _ string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range r.bookings {
+		if b.Status == entity.BookingStatusHeld {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // mockStockRepo — implements atomic stock with mutex (simulates DB behavior)
@@ -238,11 +251,17 @@ func buildRequest(eventID, email, nik, categoryID string) dto.CreateBookingReque
 	}
 }
 
+// mockEventClient — no-op event service client
+type mockEventClient struct{}
+
+func (m *mockEventClient) MarkSoldOut(_ context.Context, _ string) error { return nil }
+
 func newUC(bookingRepo *mockBookingRepo, stockRepo *mockStockRepo, prod *mockProducer) *usecase.BookingUsecase {
 	return usecase.NewBookingUsecase(
 		nil, // pool nil — sweeper tidak ditest di sini; CreateBooking tidak pakai pool langsung
 		bookingRepo, stockRepo,
 		&mockDukcapil{}, &mockCache{}, prod,
+		&mockEventClient{},
 		slog.Default(),
 	)
 }
@@ -460,3 +479,4 @@ var _ outbound.IStockRepository = (*mockStockRepo)(nil)
 var _ outbound.IDukcapilClient = (*mockDukcapil)(nil)
 var _ outbound.ICacheRepository = (*mockCache)(nil)
 var _ outbound.IEventProducer = (*mockProducer)(nil)
+var _ outbound.IEventServiceClient = (*mockEventClient)(nil)

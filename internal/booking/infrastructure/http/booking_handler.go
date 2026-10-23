@@ -69,7 +69,7 @@ func (h *Handler) CreateBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apinizer.Created(w, "Booking dibuat", resp)
+	apinizer.Success(w, "Booking dibuat", resp)
 }
 
 // GetBooking handles GET /api/v1/bookings/{bookingId}
@@ -122,8 +122,8 @@ func (h *Handler) StreamStock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Kirim initial snapshot (opsional — bisa dihapus jika FE tidak membutuhkannya).
-	fmt.Fprintf(w, ": connected\n\n")
+	// Kirim connected comment agar klien tahu stream siap.
+	fmt.Fprintf(w, ": connected to stock stream for event %s\n\n", eventID)
 	flusher.Flush()
 
 	ticker := time.NewTicker(30 * time.Second)
