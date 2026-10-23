@@ -38,6 +38,11 @@ type IBookingRepository interface {
 	// HasActiveHeld mengembalikan true bila masih ada booking HELD aktif untuk event ini.
 	// Dipakai sweeper untuk deteksi sold-out: hanya mark sold-out bila stok=0 DAN tidak ada HELD.
 	HasActiveHeld(ctx context.Context, eventID string) (bool, error)
+
+	// ExpireBookingTx mengeksekusi UPDATE booking=EXPIRED + ReleaseStock dalam satu transaksi.
+	// Transaksi dikelola di sini agar usecase tidak perlu pool.Begin langsung (dan bisa ditest tanpa DB).
+	// Mengembalikan items yang di-release untuk Kafka payload.
+	ExpireBookingTx(ctx context.Context, bookingID string) ([]entity.BookingItem, error)
 }
 
 // IStockRepository mengelola perubahan available di ticket_category.

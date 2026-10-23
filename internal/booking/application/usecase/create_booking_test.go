@@ -101,6 +101,19 @@ func (r *mockBookingRepo) HasActiveHeld(_ context.Context, _ string) (bool, erro
 	return false, nil
 }
 
+// ExpireBookingTx — mark booking EXPIRED in mock (no real TX).
+func (r *mockBookingRepo) ExpireBookingTx(_ context.Context, bookingID string) ([]entity.BookingItem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.bookings[bookingID]
+	if !ok {
+		return nil, apperror.NotFound("booking")
+	}
+	b.Status = entity.BookingStatusExpired
+	r.bookings[bookingID] = b
+	return r.items[bookingID], nil
+}
+
 // mockStockRepo — implements atomic stock with mutex (simulates DB behavior)
 type mockStockRepo struct {
 	mu          sync.Mutex

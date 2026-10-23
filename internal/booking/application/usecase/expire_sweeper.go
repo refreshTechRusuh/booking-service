@@ -36,6 +36,11 @@ func (u *BookingUsecase) StartSweeper(ctx context.Context) {
 	}()
 }
 
+// SweepOnce menjalankan satu siklus sweep synchronously (untuk testing).
+func (u *BookingUsecase) SweepOnce(ctx context.Context) {
+	u.sweepExpiredBookings(ctx)
+}
+
 // sweepExpiredBookings mendeteksi booking HELD yang TTL-nya habis dan memproses satu per satu.
 func (u *BookingUsecase) sweepExpiredBookings(ctx context.Context) {
 	bookings, err := u.bookingRepo.ListExpiredHeld(ctx, sweeperBatch)
@@ -59,23 +64,10 @@ func (u *BookingUsecase) sweepExpiredBookings(ctx context.Context) {
 // expireBooking mengeksekusi satu booking expired:
 // UPDATE status=EXPIRED + ReleaseStock + publish Kafka + publish Redis Pub/Sub + sold-out detection.
 func (u *BookingUsecase) expireBooking(ctx context.Context, bookingID, eventID string) error {
-	tx, err := u.pool.Begin(ctx)
+	// ExpireBookingTx: BEGIN + UPDATE booking + ReleaseStock + COMMIT, dikelola di repo.
+	// Usecase tidak perlu pool.Begin langsung → fully testable tanpa DB.
+	items, err := u.bookingRepo.ExpireBookingTx(ctx, bookingID)
 	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	if err := u.bookingRepo.UpdateStatus(ctx, tx, bookingID, entity.BookingStatusExpired); err != nil {
-		return err
-	}
-	if err := u.stockRepo.ReleaseStock(ctx, tx, bookingID); err != nil {
-		return err
-	}
-
-	// Baca items untuk Kafka payload (masih dalam tx, sebelum commit)
-	_, items, _ := u.bookingRepo.GetByID(ctx, bookingID)
-
-	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 

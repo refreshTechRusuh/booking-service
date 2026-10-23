@@ -141,6 +141,58 @@ func (r *BookingRepository) HasActiveHeld(ctx context.Context, eventID string) (
 	return count > 0, nil
 }
 
+// ExpireBookingTx mengeksekusi UPDATE booking=EXPIRED + ReleaseStock dalam satu transaksi.
+// Transaksi dikelola di repo agar usecase tidak perlu pool.Begin langsung.
+// Mengembalikan items yang di-release untuk Kafka/Pub/Sub payload.
+func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID string) ([]entity.BookingItem, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("expire booking tx begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// UPDATE booking status
+	if _, err := tx.Exec(ctx,
+		`UPDATE booking SET status='EXPIRED' WHERE id=$1 AND status='HELD'`, bookingID); err != nil {
+		return nil, fmt.Errorf("expire booking update: %w", err)
+	}
+
+	// ReleaseStock inline (UPDATE ticket_category FROM booking_item)
+	if _, err := tx.Exec(ctx, `
+		UPDATE ticket_category tc
+		   SET available = available + sub.qty
+		FROM (
+			SELECT category_id, COUNT(*) AS qty
+			FROM booking_item WHERE booking_id = $1
+			GROUP BY category_id
+		) sub
+		WHERE tc.id = sub.category_id`, bookingID); err != nil {
+		return nil, fmt.Errorf("expire booking release stock: %w", err)
+	}
+
+	// Baca items sebelum commit (untuk Kafka payload)
+	rows, err := tx.Query(ctx,
+		`SELECT id, booking_id, category_id, nik, price_snapshot FROM booking_item WHERE booking_id=$1`, bookingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []entity.BookingItem
+	for rows.Next() {
+		var it entity.BookingItem
+		if err := rows.Scan(&it.ID, &it.BookingID, &it.CategoryID, &it.NIK, &it.PriceSnapshot); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("expire booking commit: %w", err)
+	}
+	return items, nil
+}
+
 type StockRepository struct{ pool *pgxpool.Pool }
 
 func NewStockRepository(pool *pgxpool.Pool) *StockRepository { return &StockRepository{pool: pool} }
