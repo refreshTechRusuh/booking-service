@@ -3,19 +3,21 @@ package delivery
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/refreshTechRusuh/booking-service/internal/config"
-	bookinghttp "github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/http"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/application/usecase"
+	bookinghttp "github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/http"
+	"github.com/refreshTechRusuh/booking-service/internal/config"
 	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
+	"github.com/refreshTechRusuh/booking-service/pkg/middleware"
 	vk "github.com/valkey-io/valkey-go"
 )
 
 // Result dari New — ekspos BookingUsecase agar cmd/main.go bisa start sweeper.
 type App struct {
-	Mux     *http.ServeMux
+	Handler http.Handler // mux yang sudah di-wrap logging middleware
 	Usecase *usecase.BookingUsecase
 	Close   func()
 }
@@ -38,11 +40,14 @@ func New(
 		w.Write([]byte(`{"status":"00000","message":"pong","data":{}}`))
 	})
 
+	// Wrap seluruh mux dengan request logger — catat semua inbound request.
+	logged := middleware.RequestLogger(slog.Default())(mux)
+
 	closeFn := func() {
 		producer.Close()
 		pool.Close()
 		valkeyClient.Close()
 	}
 
-	return &App{Mux: mux, Usecase: uc, Close: closeFn}, nil
+	return &App{Handler: logged, Usecase: uc, Close: closeFn}, nil
 }

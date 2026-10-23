@@ -62,14 +62,23 @@ func (p *Producer) Publish(ctx context.Context, topic string, key string, payloa
 		Time:  time.Now(),
 	}
 
+	start := time.Now()
 	if err := p.writer.WriteMessages(ctx, msg); err != nil {
 		p.log.ErrorContext(ctx, "kafka publish failed",
 			slog.String("topic", topic),
 			slog.String("key", key),
+			slog.String("duration", time.Since(start).String()),
 			slog.String("error", err.Error()),
 		)
 		return fmt.Errorf("kafka producer: publish %s: %w", topic, err)
 	}
+
+	p.log.InfoContext(ctx, "kafka publish ok",
+		slog.String("topic", topic),
+		slog.String("key", key),
+		slog.Int("bytes", len(b)),
+		slog.String("duration", time.Since(start).String()),
+	)
 	return nil
 }
 

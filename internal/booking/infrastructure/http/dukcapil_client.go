@@ -52,11 +52,22 @@ func (c *dukcapilClient) Verify(ctx context.Context, nik, nama, tglLahir, namaIb
 	reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
+	start := time.Now()
+	c.log.InfoContext(ctx, "dukcapil verify request",
+		slog.String("nik", nik[:4]+"****"), // mask NIK, tampilkan 4 digit pertama saja
+		slog.String("url", c.baseURL+"/internal/dukcapil/verify"),
+	)
+
 	resp, err := http.Post(c.baseURL+"/internal/dukcapil/verify", "application/json", bytes.NewReader(body))
 	if err != nil {
+		c.log.ErrorContext(ctx, "dukcapil request failed",
+			slog.String("nik", nik[:4]+"****"),
+			slog.String("duration", time.Since(start).String()),
+			slog.String("error", err.Error()),
+		)
 		if c.failOpen {
 			c.log.WarnContext(ctx, "dukcapil service unreachable, fail-open: accepting NIK format check only",
-				slog.String("nik", nik), slog.String("error", err.Error()))
+				slog.String("nik", nik[:4]+"****"), slog.String("error", err.Error()))
 			return len(nik) == 16, nil // fail-open: cek format 16 digit saja
 		}
 		return false, fmt.Errorf("dukcapil client: %w", err)
@@ -66,11 +77,23 @@ func (c *dukcapilClient) Verify(ctx context.Context, nik, nama, tglLahir, namaIb
 
 	var result dukcapilVerifyResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		c.log.ErrorContext(ctx, "dukcapil response decode failed",
+			slog.String("nik", nik[:4]+"****"),
+			slog.Int("httpStatus", resp.StatusCode),
+			slog.String("duration", time.Since(start).String()),
+			slog.String("error", err.Error()),
+		)
 		if c.failOpen {
 			return len(nik) == 16, nil
 		}
 		return false, fmt.Errorf("dukcapil decode: %w", err)
 	}
 
+	c.log.InfoContext(ctx, "dukcapil verify response",
+		slog.String("nik", nik[:4]+"****"),
+		slog.Bool("valid", result.Data.Valid),
+		slog.Int("httpStatus", resp.StatusCode),
+		slog.String("duration", time.Since(start).String()),
+	)
 	return result.Data.Valid, nil
 }

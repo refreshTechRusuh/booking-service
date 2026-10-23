@@ -53,9 +53,10 @@ func main() {
 	// Start TTL sweeper goroutine
 	app.Usecase.StartSweeper(rootCtx)
 
+	// app.Handler sudah di-wrap RequestLogger (dari delivery.New).
+	// OptionalAuth di-chain agar userId tersedia di semua route non-protected.
 	handler := middleware.Chain(
-		app.Mux,
-		middleware.TransactionID,
+		app.Handler,
 		middleware.OptionalAuth(cfg.JWT.AccessTokenSecret),
 	)
 

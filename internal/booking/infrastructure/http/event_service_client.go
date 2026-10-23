@@ -37,19 +37,37 @@ func (c *EventServiceClient) MarkSoldOut(ctx context.Context, eventID string) er
 		return fmt.Errorf("event service client: build request: %w", err)
 	}
 
+	start := time.Now()
+	c.log.InfoContext(ctx, "event-service call: mark sold-out",
+		slog.String("eventId", eventID),
+		slog.String("url", url),
+	)
+
 	resp, err := c.client.Do(req)
 	if err != nil {
+		c.log.ErrorContext(ctx, "event-service call failed",
+			slog.String("eventId", eventID),
+			slog.String("duration", time.Since(start).String()),
+			slog.String("error", err.Error()),
+		)
 		return fmt.Errorf("event service client: do request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 500 {
+		c.log.ErrorContext(ctx, "event-service returned server error",
+			slog.String("eventId", eventID),
+			slog.Int("status", resp.StatusCode),
+			slog.String("duration", time.Since(start).String()),
+		)
 		return fmt.Errorf("event service client: server error %d", resp.StatusCode)
 	}
 
 	// 200, 409 (already sold out) sama-sama OK.
 	c.log.InfoContext(ctx, "event sold-out marked",
 		slog.String("eventId", eventID),
-		slog.Int("status", resp.StatusCode))
+		slog.Int("status", resp.StatusCode),
+		slog.String("duration", time.Since(start).String()),
+	)
 	return nil
 }
