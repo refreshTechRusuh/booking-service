@@ -75,7 +75,7 @@ func (r *BookingRepository) Create(ctx context.Context, tx outbound.Tx, b entity
 func (r *BookingRepository) GetByID(ctx context.Context, bookingID string) (entity.Booking, []entity.BookingItem, error) {
 	var b entity.Booking
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, COALESCE(user_id,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
+		SELECT id, COALESCE(user_id::text,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
 		FROM booking WHERE id = $1`, bookingID).
 		Scan(&b.ID, &b.UserID, &b.EventID, &b.Email, &b.Status, &b.BookingExpiresAt, &b.PaymentExpiresAt, &b.CreatedAt)
 	if err != nil {
@@ -110,7 +110,7 @@ func (r *BookingRepository) UpdateStatus(ctx context.Context, tx outbound.Tx, bo
 // ListExpiredHeld mengembalikan booking HELD yang payment_expires_at sudah lewat.
 func (r *BookingRepository) ListExpiredHeld(ctx context.Context, limit int) ([]entity.Booking, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, COALESCE(user_id,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
+		SELECT id, COALESCE(user_id::text,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
 		FROM booking WHERE status = 'HELD' AND payment_expires_at < NOW()
 		LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
