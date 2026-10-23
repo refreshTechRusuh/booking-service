@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 type contextKey string
@@ -42,6 +43,12 @@ func OptionalAuth(secret string) func(http.Handler) http.Handler {
 
 // RequireAccessToken validas X-Access-Token header (JWT dari Queue Service).
 // Jika tidak ada atau tidak sah → 401.
+//
+// TODO(BE-1-INTEGRATION): Saat BE-1 selesai, konfirmasi:
+//  1. ACCESS_TOKEN_SECRET di semua .env harus sama PERSIS dengan secret di Queue Service
+//  2. Klaim JWT: "eventId", "bookingTtlExpiresAt" — sesuai AccessTokenClaims di struct ini
+//  3. Jika BE-1 menambahkan claim baru (userId, NIK), update AccessTokenClaims di bawah
+//  4. Ganti ACCESS_TOKEN_SECRET=dev-secret-change-in-production dengan secret production
 func RequireAccessToken(secret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +143,9 @@ func parseAccessToken(tokenStr, secret string) (*AccessTokenClaims, error) {
 }
 
 func generateTxID() string {
-	// Implementasi sederhana — ganti dengan UUID atau snowflake di production.
-	// import "github.com/google/uuid" → uuid.New().String()
-	return "txid-placeholder"
+	// TODO(BE-1-DONE): generateTxID sudah pakai UUID real via google/uuid.
+	// Tidak ada lagi yang perlu diganti dari sisi ini.
+	// Saat integrasi BE-1, pastikan X-Transaction-Id dari Queue Service diteruskan ke sini
+	// agar trace ID konsisten lintas service.
+	return uuid.New().String()
 }

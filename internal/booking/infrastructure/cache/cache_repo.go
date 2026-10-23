@@ -23,6 +23,13 @@ func NewCacheRepository(client vk.Client, secret string, log *slog.Logger) *Cach
 }
 
 // ValidateAccessToken memverifikasi JWT self-verifiable (tidak perlu roundtrip ke Redis).
+//
+// TODO(BE-1-INTEGRATION): Saat BE-1 selesai:
+//  1. Pastikan Queue Service mengeluarkan JWT HS256 dengan secret yang sama
+//  2. Jika Queue Service menambahkan revocation via Redis (blacklist token), tambahkan
+//     validasi Redis di sini: r.client.Do(ctx, GET token:revoked:{jti})
+//  3. Jika Queue Service memakai RS256 (asimetris), ganti HS256 ke ParseRSA dan
+//     inject public key sebagai config baru (JWT_PUBLIC_KEY_PATH)
 func (r *CacheRepository) ValidateAccessToken(ctx context.Context, tokenStr string) (*outbound.AccessTokenClaims, error) {
 	type accessClaims struct {
 		EventID             string `json:"eventId"`

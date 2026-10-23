@@ -13,6 +13,13 @@ import (
 )
 
 // dukcapilClient mengimplementasikan outbound.IDukcapilClient.
+//
+// TODO(BE-1-INTEGRATION): Saat BE-1 selesai, konfirmasi:
+//  1. URL endpoint Dukcapil dari BE-1 → set DUKCAPIL_BASE_URL di .env
+//  2. Format request/response sama dengan mock-dukcapil/main.go
+//     (POST /internal/dukcapil/verify, field: nik, nama, tglLahir, namaIbu)
+//  3. Auth header jika dibutuhkan (tambahkan ke Verify() di sini)
+//  4. DUKCAPIL_FAIL_OPEN=false di production (sekarang true untuk dev)
 type dukcapilClient struct {
 	baseURL  string
 	timeout  time.Duration
