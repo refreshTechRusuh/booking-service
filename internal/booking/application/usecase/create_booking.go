@@ -278,12 +278,20 @@ func (u *BookingUsecase) publishPostBooking(
 			Price:      it.PriceSnapshot,
 		})
 	}
+
+	// PaymentExpiresAt dikirim dalam RFC3339 agar worker dapat render deadline bayar yang akurat.
+	var paymentExpiresAt string
+	if b.PaymentExpiresAt != nil {
+		paymentExpiresAt = b.PaymentExpiresAt.UTC().Format(time.RFC3339)
+	}
+
 	if err := u.producer.PublishBookingCreated(ctx, b.EventID, kafka.BookingCreatedEvent{
-		BookingID:   b.ID,
-		EventID:     b.EventID,
-		Email:       b.Email,
-		Items:       itemEvents,
-		TotalAmount: total,
+		BookingID:        b.ID,
+		EventID:          b.EventID,
+		Email:            b.Email,
+		Items:            itemEvents,
+		TotalAmount:      total,
+		PaymentExpiresAt: paymentExpiresAt,
 	}); err != nil {
 		u.log.ErrorContext(ctx, "publish booking.created failed", slog.Any("err", err))
 	}

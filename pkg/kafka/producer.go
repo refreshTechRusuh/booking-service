@@ -90,11 +90,12 @@ const (
 // ---- Event payloads ---------------------------------------------------------
 
 type BookingCreatedEvent struct {
-	BookingID   string              `json:"bookingId"`
-	EventID     string              `json:"eventId"`
-	Email       string              `json:"email"`
-	Items       []BookingItemEvent  `json:"items"`
-	TotalAmount int64               `json:"totalAmount"`
+	BookingID        string             `json:"bookingId"`
+	EventID          string             `json:"eventId"`
+	Email            string             `json:"email"`
+	Items            []BookingItemEvent `json:"items"`
+	TotalAmount      int64              `json:"totalAmount"`
+	PaymentExpiresAt string             `json:"paymentExpiresAt,omitempty"` // RFC3339; deadline bayar untuk email #1
 }
 
 type BookingItemEvent struct {
