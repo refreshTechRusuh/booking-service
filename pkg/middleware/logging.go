@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/refreshTechRusuh/booking-service/pkg/logctx"
 )
 
 // responseWriter wraps http.ResponseWriter untuk capture status code.
@@ -44,6 +45,10 @@ func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 				txID = uuid.New().String()
 			}
 			w.Header().Set("X-Transaction-Id", txID)
+
+			// Titipkan txId ke context agar ikut otomatis di semua log hilir
+			// (handler, usecase, query DB) via ContextHandler.
+			r = r.WithContext(logctx.WithTxID(r.Context(), txID))
 
 			wrapped := wrapResponseWriter(w)
 			next.ServeHTTP(wrapped, r)
