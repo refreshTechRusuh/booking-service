@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,12 +20,26 @@ import (
 // asTx mengkonversi outbound.Tx ke pgx.Tx (infra layer, aman).
 func asTx(tx outbound.Tx) pgx.Tx { return tx.(pgx.Tx) }
 
+// dbLog adalah helper untuk log query DB secara konsisten.
+func dbLog(ctx context.Context, log *slog.Logger, op string, start time.Time, err error, args ...any) {
+	elapsed := time.Since(start)
+	base := append([]any{slog.String("op", op), slog.String("duration", elapsed.String())}, args...)
+	if err != nil {
+		log.ErrorContext(ctx, "db query failed", append(base, slog.String("error", err.Error()))...)
+	} else {
+		log.InfoContext(ctx, "db query ok", base...)
+	}
+}
+
 // ---- BookingRepository ------------------------------------------------------
 
-type BookingRepository struct{ pool *pgxpool.Pool }
+type BookingRepository struct {
+	pool *pgxpool.Pool
+	log  *slog.Logger
+}
 
-func NewBookingRepository(pool *pgxpool.Pool) *BookingRepository {
-	return &BookingRepository{pool: pool}
+func NewBookingRepository(pool *pgxpool.Pool, log *slog.Logger) *BookingRepository {
+	return &BookingRepository{pool: pool, log: log}
 }
 
 // CreateBookingTx menjalankan fn dalam satu transaksi pgx.
@@ -33,8 +49,10 @@ func (r *BookingRepository) CreateBookingTx(
 	req dto.CreateBookingRequest,
 	fn func(context.Context, outbound.Tx) (dto.CreateBookingResponse, error),
 ) (dto.CreateBookingResponse, error) {
+	start := time.Now()
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
+		dbLog(ctx, r.log, "booking.begin_tx", start, err)
 		return dto.CreateBookingResponse{}, apperror.Internal(fmt.Errorf("begin tx: %w", err))
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
@@ -45,19 +63,23 @@ func (r *BookingRepository) CreateBookingTx(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		dbLog(ctx, r.log, "booking.commit_tx", start, err)
 		return dto.CreateBookingResponse{}, apperror.Internal(fmt.Errorf("commit tx: %w", err))
 	}
+	dbLog(ctx, r.log, "booking.create_tx", start, nil, slog.String("eventId", req.EventID))
 	return result, nil
 }
 
 // Create menyimpan booking + booking_items dalam transaksi yang sudah berjalan.
 func (r *BookingRepository) Create(ctx context.Context, tx outbound.Tx, b entity.Booking, items []entity.BookingItem) error {
+	start := time.Now()
 	ptx := asTx(tx)
 	_, err := ptx.Exec(ctx, `
 		INSERT INTO booking (id, user_id, event_id, email, status, booking_expires_at, payment_expires_at, created_at)
 		VALUES ($1, NULLIF($2,''), $3, $4, $5, $6, $7, $8)`,
 		b.ID, b.UserID, b.EventID, b.Email, b.Status, b.BookingExpiresAt, b.PaymentExpiresAt, b.CreatedAt)
 	if err != nil {
+		dbLog(ctx, r.log, "booking.insert", start, err, slog.String("bookingId", b.ID))
 		return fmt.Errorf("booking create: %w", err)
 	}
 	for _, item := range items {
@@ -65,14 +87,20 @@ func (r *BookingRepository) Create(ctx context.Context, tx outbound.Tx, b entity
 			INSERT INTO booking_item (id, booking_id, category_id, nik, price_snapshot)
 			VALUES ($1, $2, $3, $4, $5)`,
 			item.ID, item.BookingID, item.CategoryID, item.NIK, item.PriceSnapshot); err != nil {
+			dbLog(ctx, r.log, "booking_item.insert", start, err, slog.String("bookingId", b.ID))
 			return fmt.Errorf("booking_item create: %w", err)
 		}
 	}
+	dbLog(ctx, r.log, "booking.insert", start, nil,
+		slog.String("bookingId", b.ID),
+		slog.String("eventId", b.EventID),
+		slog.Int("items", len(items)))
 	return nil
 }
 
 // GetByID mengembalikan booking beserta items-nya.
 func (r *BookingRepository) GetByID(ctx context.Context, bookingID string) (entity.Booking, []entity.BookingItem, error) {
+	start := time.Now()
 	var b entity.Booking
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, COALESCE(user_id::text,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
@@ -80,13 +108,16 @@ func (r *BookingRepository) GetByID(ctx context.Context, bookingID string) (enti
 		Scan(&b.ID, &b.UserID, &b.EventID, &b.Email, &b.Status, &b.BookingExpiresAt, &b.PaymentExpiresAt, &b.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			dbLog(ctx, r.log, "booking.get_by_id", start, err, slog.String("bookingId", bookingID))
 			return entity.Booking{}, nil, apperror.NotFound("booking")
 		}
+		dbLog(ctx, r.log, "booking.get_by_id", start, err, slog.String("bookingId", bookingID))
 		return entity.Booking{}, nil, fmt.Errorf("booking get: %w", err)
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, booking_id, category_id, nik, price_snapshot FROM booking_item WHERE booking_id = $1`, bookingID)
 	if err != nil {
+		dbLog(ctx, r.log, "booking_item.list", start, err, slog.String("bookingId", bookingID))
 		return b, nil, err
 	}
 	defer rows.Close()
@@ -98,22 +129,31 @@ func (r *BookingRepository) GetByID(ctx context.Context, bookingID string) (enti
 		}
 		items = append(items, it)
 	}
+	dbLog(ctx, r.log, "booking.get_by_id", start, nil,
+		slog.String("bookingId", bookingID),
+		slog.Int("items", len(items)))
 	return b, items, nil
 }
 
 // UpdateStatus memperbarui status booking dalam transaksi.
 func (r *BookingRepository) UpdateStatus(ctx context.Context, tx outbound.Tx, bookingID string, status entity.BookingStatus) error {
+	start := time.Now()
 	_, err := asTx(tx).Exec(ctx, `UPDATE booking SET status = $1 WHERE id = $2`, status, bookingID)
+	dbLog(ctx, r.log, "booking.update_status", start, err,
+		slog.String("bookingId", bookingID),
+		slog.String("status", string(status)))
 	return err
 }
 
 // ListExpiredHeld mengembalikan booking HELD yang payment_expires_at sudah lewat.
 func (r *BookingRepository) ListExpiredHeld(ctx context.Context, limit int) ([]entity.Booking, error) {
+	start := time.Now()
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, COALESCE(user_id::text,''), event_id, email, status, booking_expires_at, payment_expires_at, created_at
 		FROM booking WHERE status = 'HELD' AND payment_expires_at < NOW()
 		LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
+		dbLog(ctx, r.log, "booking.list_expired_held", start, err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -125,16 +165,21 @@ func (r *BookingRepository) ListExpiredHeld(ctx context.Context, limit int) ([]e
 		}
 		result = append(result, b)
 	}
+	dbLog(ctx, r.log, "booking.list_expired_held", start, nil, slog.Int("count", len(result)))
 	return result, nil
 }
 
 // HasActiveHeld mengembalikan true bila masih ada booking HELD aktif untuk event ini.
 func (r *BookingRepository) HasActiveHeld(ctx context.Context, eventID string) (bool, error) {
+	start := time.Now()
 	var count int
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM booking
 		WHERE event_id = $1 AND status = 'HELD' AND payment_expires_at > NOW()
 		LIMIT 1`, eventID).Scan(&count)
+	dbLog(ctx, r.log, "booking.has_active_held", start, err,
+		slog.String("eventId", eventID),
+		slog.Bool("result", count > 0))
 	if err != nil {
 		return false, fmt.Errorf("has active held: %w", err)
 	}
@@ -142,22 +187,21 @@ func (r *BookingRepository) HasActiveHeld(ctx context.Context, eventID string) (
 }
 
 // ExpireBookingTx mengeksekusi UPDATE booking=EXPIRED + ReleaseStock dalam satu transaksi.
-// Transaksi dikelola di repo agar usecase tidak perlu pool.Begin langsung.
-// Mengembalikan items yang di-release untuk Kafka/Pub/Sub payload.
 func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID string) ([]entity.BookingItem, error) {
+	start := time.Now()
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
+		dbLog(ctx, r.log, "booking.expire_tx.begin", start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking tx begin: %w", err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	// UPDATE booking status
 	if _, err := tx.Exec(ctx,
 		`UPDATE booking SET status='EXPIRED' WHERE id=$1 AND status='HELD'`, bookingID); err != nil {
+		dbLog(ctx, r.log, "booking.expire_tx.update_booking", start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking update: %w", err)
 	}
 
-	// ReleaseStock inline (UPDATE ticket_category FROM booking_item)
 	if _, err := tx.Exec(ctx, `
 		UPDATE ticket_category tc
 		   SET available = available + sub.qty
@@ -167,10 +211,10 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 			GROUP BY category_id
 		) sub
 		WHERE tc.id = sub.category_id`, bookingID); err != nil {
+		dbLog(ctx, r.log, "booking.expire_tx.release_stock", start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking release stock: %w", err)
 	}
 
-	// Baca items sebelum commit (untuk Kafka payload)
 	rows, err := tx.Query(ctx,
 		`SELECT id, booking_id, category_id, nik, price_snapshot FROM booking_item WHERE booking_id=$1`, bookingID)
 	if err != nil {
@@ -188,34 +232,54 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 	rows.Close()
 
 	if err := tx.Commit(ctx); err != nil {
+		dbLog(ctx, r.log, "booking.expire_tx.commit", start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking commit: %w", err)
 	}
+	dbLog(ctx, r.log, "booking.expire_tx", start, nil,
+		slog.String("bookingId", bookingID),
+		slog.Int("itemsReleased", len(items)))
 	return items, nil
 }
 
-type StockRepository struct{ pool *pgxpool.Pool }
+type StockRepository struct {
+	pool *pgxpool.Pool
+	log  *slog.Logger
+}
 
-func NewStockRepository(pool *pgxpool.Pool) *StockRepository { return &StockRepository{pool: pool} }
+func NewStockRepository(pool *pgxpool.Pool, log *slog.Logger) *StockRepository {
+	return &StockRepository{pool: pool, log: log}
+}
 
 // HoldStock mengurangi available atomic — conditional UPDATE WHERE available >= qty.
 func (r *StockRepository) HoldStock(ctx context.Context, tx outbound.Tx, items []entity.HoldItem) error {
 	ptx := asTx(tx)
 	for _, item := range items {
+		start := time.Now()
 		tag, err := ptx.Exec(ctx,
 			`UPDATE ticket_category SET available = available - $1 WHERE id = $2 AND available >= $1`,
 			item.Qty, item.CategoryID)
 		if err != nil {
+			dbLog(ctx, r.log, "stock.hold", start, err,
+				slog.String("categoryId", item.CategoryID),
+				slog.Int("qty", item.Qty))
 			return fmt.Errorf("hold stock: %w", err)
 		}
 		if tag.RowsAffected() == 0 {
+			dbLog(ctx, r.log, "stock.hold", start, fmt.Errorf("stock unavailable"),
+				slog.String("categoryId", item.CategoryID),
+				slog.Int("qty", item.Qty))
 			return apperror.StockUnavailable()
 		}
+		dbLog(ctx, r.log, "stock.hold", start, nil,
+			slog.String("categoryId", item.CategoryID),
+			slog.Int("qty", item.Qty))
 	}
 	return nil
 }
 
 // ReleaseStock mengembalikan hold (available += qty) dalam transaksi.
 func (r *StockRepository) ReleaseStock(ctx context.Context, tx outbound.Tx, bookingID string) error {
+	start := time.Now()
 	_, err := asTx(tx).Exec(ctx, `
 		UPDATE ticket_category tc
 		   SET available = available + sub.qty
@@ -225,13 +289,16 @@ func (r *StockRepository) ReleaseStock(ctx context.Context, tx outbound.Tx, book
 			GROUP BY category_id
 		) sub
 		WHERE tc.id = sub.category_id`, bookingID)
+	dbLog(ctx, r.log, "stock.release", start, err, slog.String("bookingId", bookingID))
 	return err
 }
 
 // GetAvailableByEvent mengembalikan snapshot stok per kategori.
 func (r *StockRepository) GetAvailableByEvent(ctx context.Context, eventID string) ([]entity.CategoryStock, error) {
+	start := time.Now()
 	rows, err := r.pool.Query(ctx, `SELECT id, name, available FROM ticket_category WHERE event_id = $1`, eventID)
 	if err != nil {
+		dbLog(ctx, r.log, "stock.get_available_by_event", start, err, slog.String("eventId", eventID))
 		return nil, err
 	}
 	defer rows.Close()
@@ -243,13 +310,18 @@ func (r *StockRepository) GetAvailableByEvent(ctx context.Context, eventID strin
 		}
 		result = append(result, c)
 	}
+	dbLog(ctx, r.log, "stock.get_available_by_event", start, nil,
+		slog.String("eventId", eventID),
+		slog.Int("categories", len(result)))
 	return result, nil
 }
 
 // GetPriceMap mengembalikan map[categoryID]price untuk price_snapshot booking_item.
 func (r *StockRepository) GetPriceMap(ctx context.Context, eventID string) (map[string]int64, error) {
+	start := time.Now()
 	rows, err := r.pool.Query(ctx, `SELECT id, price FROM ticket_category WHERE event_id = $1`, eventID)
 	if err != nil {
+		dbLog(ctx, r.log, "stock.get_price_map", start, err, slog.String("eventId", eventID))
 		return nil, fmt.Errorf("get price map: %w", err)
 	}
 	defer rows.Close()
@@ -262,17 +334,24 @@ func (r *StockRepository) GetPriceMap(ctx context.Context, eventID string) (map[
 		}
 		m[id] = price
 	}
+	dbLog(ctx, r.log, "stock.get_price_map", start, nil,
+		slog.String("eventId", eventID),
+		slog.Int("categories", len(m)))
 	return m, nil
 }
 
 // CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik) — SELECT FOR UPDATE.
 func (r *StockRepository) CountNIKBookings(ctx context.Context, tx outbound.Tx, eventID, nik string) (int, error) {
+	start := time.Now()
 	var count int
 	err := asTx(tx).QueryRow(ctx, `
 		SELECT COUNT(*) FROM booking_item bi
 		JOIN booking b ON b.id = bi.booking_id
 		WHERE b.event_id = $1 AND bi.nik = $2 AND b.status IN ('HELD','PAID')
 		FOR UPDATE`, eventID, nik).Scan(&count)
+	dbLog(ctx, r.log, "stock.count_nik_bookings", start, err,
+		slog.String("eventId", eventID),
+		slog.Int("count", count))
 	if err != nil {
 		return 0, fmt.Errorf("count nik bookings: %w", err)
 	}

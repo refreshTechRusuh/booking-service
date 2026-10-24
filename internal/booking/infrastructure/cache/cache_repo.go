@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
@@ -61,9 +62,25 @@ func (r *CacheRepository) ValidateAccessToken(ctx context.Context, tokenStr stri
 // PublishStockChanged mempublish payload ke channel Redis Pub/Sub.
 func (r *CacheRepository) PublishStockChanged(ctx context.Context, eventID string, payload []byte) error {
 	channel := fmt.Sprintf("stock:%s", eventID)
-	return r.client.Do(ctx,
+	start := time.Now()
+	err := r.client.Do(ctx,
 		r.client.B().Publish().Channel(channel).Message(string(payload)).Build(),
 	).Error()
+	elapsed := fmt.Sprintf("%s", time.Since(start))
+	if err != nil {
+		r.log.ErrorContext(ctx, "redis publish failed",
+			slog.String("channel", channel),
+			slog.String("duration", elapsed),
+			slog.String("error", err.Error()),
+		)
+	} else {
+		r.log.InfoContext(ctx, "redis publish ok",
+			slog.String("channel", channel),
+			slog.Int("bytes", len(payload)),
+			slog.String("duration", elapsed),
+		)
+	}
+	return err
 }
 
 // SubscribeStockChanged subscribe ke channel Redis Pub/Sub untuk SSE stok.
