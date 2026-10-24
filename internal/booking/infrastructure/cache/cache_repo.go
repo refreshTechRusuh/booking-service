@@ -94,27 +94,23 @@ func (r *CacheRepository) SubscribeStockChanged(ctx context.Context, eventID str
 	go func() {
 		defer close(ch)
 
-		if err := dedicatedClient.Do(ctx,
+		// valkey-go idiom: Receive() MENGIRIM perintah SUBSCRIBE lalu memblok
+		// selama koneksi hidup, memanggil callback untuk setiap pesan. Jangan
+		// kirim SUBSCRIBE terpisah lewat Do() sebelumnya — itu membuat koneksi
+		// sudah masuk mode subscribe sehingga Receive gagal dan subscriber hilang.
+		err := dedicatedClient.Receive(ctx,
 			dedicatedClient.B().Subscribe().Channel(channel).Build(),
-		).Error(); err != nil {
-			r.log.ErrorContext(ctx, "subscribe failed", slog.String("channel", channel), slog.Any("err", err))
-			return
-		}
-
-		for {
-			err := dedicatedClient.Receive(ctx,
-				dedicatedClient.B().Subscribe().Channel(channel).Build(),
-				func(m vk.PubSubMessage) {
-					select {
-					case ch <- []byte(m.Message):
-					default:
-						r.log.WarnContext(ctx, "stock SSE channel full, dropping", slog.String("eventId", eventID))
-					}
-				},
-			)
-			if err != nil {
-				return
-			}
+			func(m vk.PubSubMessage) {
+				select {
+				case ch <- []byte(m.Message):
+				default:
+					r.log.WarnContext(ctx, "stock SSE channel full, dropping", slog.String("eventId", eventID))
+				}
+			},
+		)
+		// Receive hanya kembali saat ctx dibatalkan (klien disconnect) atau koneksi putus.
+		if err != nil && ctx.Err() == nil {
+			r.log.ErrorContext(ctx, "subscribe ended with error", slog.String("channel", channel), slog.Any("err", err))
 		}
 	}()
 
