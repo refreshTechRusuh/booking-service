@@ -142,12 +142,7 @@ func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, event
 			// Semua stok 0 dan tidak ada HELD aktif → event benar-benar habis.
 			u.log.InfoContext(ctx, "event sold-out detected", slog.String("eventId", eventID))
 
-			// 4a. Beritahu event-service untuk update status event (idempoten).
-			if markErr := u.eventClient.MarkSoldOut(ctx, eventID); markErr != nil {
-				u.log.WarnContext(ctx, "mark sold-out failed", slog.Any("err", markErr))
-			}
-
-			// 4b. Broadcast sold-out frame ke SSE subscriber via Redis Pub/Sub.
+			// Broadcast sold-out frame ke SSE subscriber via Redis Pub/Sub.
 			soldOutEv := dto.StockEvent{EventID: eventID, SoldOut: true}
 			if b, marshalErr := json.Marshal(soldOutEv); marshalErr == nil {
 				if pubErr := u.cache.PublishStockChanged(ctx, eventID, b); pubErr != nil {
@@ -155,7 +150,8 @@ func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, event
 				}
 			}
 
-			// 4c. Kafka: event.sold_out → downstream consumers.
+			// Kafka: event.sold_out → event-service (update status) + Queue Service (tutup antrian).
+			// Event-service consume topik ini dan update event.status='sold_out' sendiri.
 			if pubErr := u.producer.PublishEventSoldOut(ctx, eventID, kafka.EventSoldOutEvent{
 				EventID: eventID,
 			}); pubErr != nil {

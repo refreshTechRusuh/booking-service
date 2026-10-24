@@ -31,8 +31,6 @@ func NewWiredHandlerWithUC(
 	cacheRepo := cache.NewCacheRepository(valkeyClient, cfg.JWT.AccessTokenSecret, log)
 	eventProducer := event.NewKafkaProducer(producer, log)
 
-	eventClient := NewEventServiceClient(cfg.EventSvc.BaseURL, log)
-
-	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, eventClient, log)
+	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, log)
 	return NewHandler(uc), uc
 }

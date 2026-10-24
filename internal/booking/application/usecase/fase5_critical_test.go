@@ -258,7 +258,6 @@ func TestBookingSweeper_ReleasesStock(t *testing.T) {
 		map[string]int64{"cat-vip": 500000},
 	)
 	prod := newMockProducer()
-	eventClient := &soldOutCapturingClient{}
 	cache := newTrackingCache()
 
 	// Buat booking HELD yang sudah expire
@@ -275,7 +274,7 @@ func TestBookingSweeper_ReleasesStock(t *testing.T) {
 		{ID: "item-1", BookingID: bookingID, CategoryID: "cat-vip", NIK: "1234567890123456"},
 	}
 
-	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, eventClient, slog.Default())
+	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, slog.Default())
 
 	// Jalankan satu siklus sweep secara synchronous (tanpa ticker)
 	uc.SweepOnce(context.Background())
@@ -317,7 +316,6 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 			map[string]int64{"cat-vip": 500000},
 		)
 		prod := newMockProducer()
-		eventClient := &soldOutCapturingClient{}
 		cache := newTrackingCache()
 
 		// Ada booking HELD aktif (belum expire)
@@ -327,7 +325,7 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 			PaymentExpiresAt: &future,
 		}
 
-		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, eventClient, slog.Default())
+		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, slog.Default())
 
 		// StreamStock harus kirim snapshot (stok=0) tapi TIDAK sold-out frame
 		ctx, cancel := context.WithCancel(context.Background())
@@ -359,9 +357,9 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 				hasSoldOutFrame = true
 			}
 		}
-		// Event client tidak boleh dipanggil karena ada HELD aktif
-		assert.False(t, eventClient.wasCalled(),
-			"MarkSoldOut tidak boleh dipanggil bila masih ada HELD aktif")
+		// Kafka event.sold_out tidak boleh dipublish karena ada HELD aktif
+		assert.False(t, prod.count("event.sold_out") > 0,
+			"event.sold_out tidak boleh dipublish bila masih ada HELD aktif")
 		_ = hasSoldOutFrame // bisa jadi false karena HELD aktif — expected
 	})
 
@@ -372,10 +370,9 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 			map[string]int64{"cat-vip": 500000},
 		)
 		prod := newMockProducer()
-		eventClient := &soldOutCapturingClient{}
 		cache := newTrackingCache()
 
-		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, eventClient, slog.Default())
+		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, slog.Default())
 
 		// StreamStock dengan stok=0 + no HELD → harus kirim soldOut frame
 		ctx, cancel := context.WithCancel(context.Background())
@@ -431,9 +428,8 @@ func TestStreamStock_InitialSnapshot(t *testing.T) {
 	)
 	prod := newMockProducer()
 	cache := newTrackingCache()
-	eventClient := &soldOutCapturingClient{}
 
-	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, eventClient, slog.Default())
+	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, prod, slog.Default())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -483,7 +479,7 @@ func TestStreamStock_CategoryFilter(t *testing.T) {
 	)
 	cache := newTrackingCache()
 
-	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, newMockProducer(), &soldOutCapturingClient{}, slog.Default())
+	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, newMockProducer(), slog.Default())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -533,7 +529,7 @@ func TestStreamStock_LiveUpdate(t *testing.T) {
 	)
 	cache := newTrackingCache()
 
-	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, newMockProducer(), &soldOutCapturingClient{}, slog.Default())
+	uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, cache, newMockProducer(), slog.Default())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -596,7 +592,7 @@ func TestGetBooking_TTLAndBackDisabled(t *testing.T) {
 			PaymentExpiresAt: &future,
 		}
 
-		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, newTrackingCache(), newMockProducer(), &soldOutCapturingClient{}, slog.Default())
+		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, newTrackingCache(), newMockProducer(), slog.Default())
 
 		resp, err := uc.GetBooking(context.Background(), "bkg-ttl-1")
 		require.NoError(t, err)
@@ -615,7 +611,7 @@ func TestGetBooking_TTLAndBackDisabled(t *testing.T) {
 			PaymentExpiresAt: &almostExpired,
 		}
 
-		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, newTrackingCache(), newMockProducer(), &soldOutCapturingClient{}, slog.Default())
+		uc := usecase.NewBookingUsecase(nil, bookingRepo, stockRepo, &mockDukcapil{}, newTrackingCache(), newMockProducer(), slog.Default())
 
 		resp, err := uc.GetBooking(context.Background(), "bkg-ttl-2")
 		require.NoError(t, err)

@@ -32,7 +32,6 @@ type BookingUsecase struct {
 	dukcapil    outbound.IDukcapilClient
 	cache       outbound.ICacheRepository
 	producer    outbound.IEventProducer
-	eventClient outbound.IEventServiceClient
 	log         *slog.Logger
 }
 
@@ -43,13 +42,11 @@ func NewBookingUsecase(
 	dukcapil outbound.IDukcapilClient,
 	cache outbound.ICacheRepository,
 	producer outbound.IEventProducer,
-	eventClient outbound.IEventServiceClient,
 	log *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
 		pool: pool, bookingRepo: bookingRepo, stockRepo: stockRepo,
-		dukcapil: dukcapil, cache: cache, producer: producer,
-		eventClient: eventClient, log: log,
+		dukcapil: dukcapil, cache: cache, producer: producer, log: log,
 	}
 }
 

@@ -274,7 +274,6 @@ func newUC(bookingRepo *mockBookingRepo, stockRepo *mockStockRepo, prod *mockPro
 		nil, // pool nil — sweeper tidak ditest di sini; CreateBooking tidak pakai pool langsung
 		bookingRepo, stockRepo,
 		&mockDukcapil{}, &mockCache{}, prod,
-		&mockEventClient{},
 		slog.Default(),
 	)
 }
@@ -492,4 +491,3 @@ var _ outbound.IStockRepository = (*mockStockRepo)(nil)
 var _ outbound.IDukcapilClient = (*mockDukcapil)(nil)
 var _ outbound.ICacheRepository = (*mockCache)(nil)
 var _ outbound.IEventProducer = (*mockProducer)(nil)
-var _ outbound.IEventServiceClient = (*mockEventClient)(nil)

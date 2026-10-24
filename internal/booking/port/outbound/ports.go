@@ -76,13 +76,6 @@ type ICacheRepository interface {
 	SubscribeStockChanged(ctx context.Context, eventID string) (<-chan []byte, func(), error)
 }
 
-// IEventServiceClient memanggil event-service via HTTP internal API.
-type IEventServiceClient interface {
-	// MarkSoldOut memanggil POST /internal/events/{eventId}/sold-out ke event-service.
-	// Idempoten: event-service mengabaikan bila sudah sold-out.
-	MarkSoldOut(ctx context.Context, eventID string) error
-}
-
 // IEventProducer mempublish event ke Kafka.
 type IEventProducer interface {
 	PublishBookingCreated(ctx context.Context, eventID string, payload any) error
