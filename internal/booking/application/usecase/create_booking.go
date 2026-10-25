@@ -309,6 +309,34 @@ func (u *BookingUsecase) publishPostBooking(
 			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", err))
 		}
 	}
+
+	// 3. Redis Pub/Sub → SSE: kirim frame stok terbaru per kategori yang di-hold,
+	//    supaya klien SSE lain melihat stok TURUN live saat ada booking (bukan hanya
+	//    saat expire/sold-out). Snapshot available dibaca sekali setelah hold di-commit.
+	stocks, err := u.stockRepo.GetAvailableByEvent(ctx, b.EventID)
+	if err != nil {
+		u.log.WarnContext(ctx, "get available after hold failed", slog.Any("err", err))
+		return
+	}
+	stockMap := make(map[string]int, len(stocks))
+	nameMap := make(map[string]string, len(stocks))
+	for _, s := range stocks {
+		stockMap[s.CategoryID] = s.Available
+		nameMap[s.CategoryID] = s.Name
+	}
+	for _, h := range holdItems {
+		ev := dto.StockEvent{
+			EventID:    b.EventID,
+			CategoryID: h.CategoryID,
+			Name:       nameMap[h.CategoryID],
+			Available:  stockMap[h.CategoryID], // nilai available aktual setelah hold
+		}
+		if bz, marshalErr := json.Marshal(ev); marshalErr == nil {
+			if pubErr := u.cache.PublishStockChanged(ctx, b.EventID, bz); pubErr != nil {
+				u.log.WarnContext(ctx, "redis publish stock.changed (HOLD) failed", slog.Any("err", pubErr))
+			}
+		}
+	}
 }
 
 // ---- Helpers -----------------------------------------------------------------
