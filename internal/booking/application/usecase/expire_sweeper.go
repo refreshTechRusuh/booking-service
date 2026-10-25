@@ -93,8 +93,10 @@ func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, event
 		u.log.WarnContext(ctx, "get available after release failed", slog.Any("err", err))
 	}
 	stockMap := make(map[string]int, len(stocks))
+	nameMap := make(map[string]string, len(stocks))
 	for _, s := range stocks {
 		stockMap[s.CategoryID] = s.Available
+		nameMap[s.CategoryID] = s.Name
 	}
 
 	// 3. Per-kategori: publish Kafka stock.changed + Redis Pub/Sub (→ SSE ke klien).
@@ -116,6 +118,7 @@ func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, event
 		ev := dto.StockEvent{
 			EventID:    eventID,
 			CategoryID: item.CategoryID,
+			Name:       nameMap[item.CategoryID],
 			Available:  available,
 		}
 		if b, marshalErr := json.Marshal(ev); marshalErr == nil {

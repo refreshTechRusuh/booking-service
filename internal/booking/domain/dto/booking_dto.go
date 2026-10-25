@@ -54,6 +54,7 @@ type BookingStatusResponse struct {
 type StockEvent struct {
 	EventID    string `json:"eventId"`
 	CategoryID string `json:"categoryId"`
+	Name       string `json:"name,omitempty"` // nama kategori (VIP/Festival/...), selalu diisi di initial snapshot
 	Available  int    `json:"available"`
 	SoldOut    bool   `json:"soldOut,omitempty"` // true bila event ini sold-out
 }

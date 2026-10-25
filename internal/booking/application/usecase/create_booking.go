@@ -211,6 +211,7 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 			ev := dto.StockEvent{
 				EventID:    eventID,
 				CategoryID: cs.CategoryID,
+				Name:       cs.Name,
 				Available:  cs.Available,
 			}
 			if len(categoryIDs) > 0 && !containsString(categoryIDs, cs.CategoryID) {
