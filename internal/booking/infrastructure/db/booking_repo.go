@@ -100,7 +100,7 @@ func (r *BookingRepository) Create(ctx context.Context, tx outbound.Tx, b entity
 	ptx := asTx(tx)
 	const qInsertBooking = `
 		INSERT INTO booking (id, user_id, event_id, email, status, booking_expires_at, payment_expires_at, created_at)
-		VALUES ($1, NULLIF($2,''), $3, $4, $5, $6, $7, $8)`
+		VALUES ($1, NULLIF($2,'')::uuid, $3, $4, $5, $6, $7, $8)`
 	const qInsertItem = `
 			INSERT INTO booking_item (id, booking_id, category_id, nik, price_snapshot)
 			VALUES ($1, $2, $3, $4, $5)`
@@ -374,14 +374,31 @@ func (r *StockRepository) GetPriceMap(ctx context.Context, eventID string) (map[
 	return m, nil
 }
 
-// CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik) — SELECT FOR UPDATE.
+// CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik).
+//
+// Kuota per-NIK harus atomik: dua transaksi untuk NIK+event yang sama tidak boleh
+// sama-sama membaca count lama lalu sama-sama insert (race pada baris yang BELUM ada,
+// yang tidak bisa dikunci oleh SELECT ... FOR UPDATE). Karena itu kita pakai
+// pg_advisory_xact_lock(eventID, nik) sebagai mutex per-NIK: transaksi kedua menunggu
+// sampai yang pertama commit/rollback, lock lepas otomatis di akhir transaksi.
 func (r *StockRepository) CountNIKBookings(ctx context.Context, tx outbound.Tx, eventID, nik string) (int, error) {
 	start := time.Now()
+
+	// Advisory lock per (eventID, nik) sebagai satu key bigint.
+	// pg_advisory_xact_lock punya varian (bigint) dan (int4, int4) — TIDAK ada
+	// (bigint, bigint). hashtextextended mengembalikan bigint, jadi kita gabungkan
+	// event+nik jadi satu string lalu hash ke satu key bigint.
+	const qLockNIK = `SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))`
+	if _, err := asTx(tx).Exec(ctx, qLockNIK, eventID, nik); err != nil {
+		dbLog(ctx, r.log, "stock.lock_nik", qLockNIK, start, err,
+			slog.String("eventId", eventID))
+		return 0, fmt.Errorf("lock nik: %w", err)
+	}
+
 	const qCountNIK = `
 		SELECT COUNT(*) FROM booking_item bi
 		JOIN booking b ON b.id = bi.booking_id
-		WHERE b.event_id = $1 AND bi.nik = $2 AND b.status IN ('HELD','PAID')
-		FOR UPDATE`
+		WHERE b.event_id = $1 AND bi.nik = $2 AND b.status IN ('HELD','PAID')`
 	var count int
 	err := asTx(tx).QueryRow(ctx, qCountNIK, eventID, nik).Scan(&count)
 	dbLog(ctx, r.log, "stock.count_nik_bookings", qCountNIK, start, err,

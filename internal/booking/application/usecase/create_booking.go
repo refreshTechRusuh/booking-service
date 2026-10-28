@@ -19,7 +19,7 @@ import (
 
 const (
 	maxTicketsPerBooking  = 3
-	maxTicketsPerNIK      = 3
+	maxTicketsPerNIK      = 1 // 1 NIK hanya boleh 1 tiket per event (BR-01)
 	paymentTTLMinutes     = 10
 	backDisabledThreshold = 30 // seconds
 )
