@@ -71,7 +71,7 @@ func (e *AppError) Unwrap() error { return e.cause }
 
 func Validation(msg string) *AppError        { return New(ErrValidation, msg) }
 func NIKInvalid(nik string) *AppError        { return New(ErrNIKInvalid, "NIK tidak valid: "+nik) }
-func QuotaExceeded() *AppError               { return New(ErrQuotaExceeded, "Melebihi batas 3 tiket per NIK untuk event ini") }
+func QuotaExceeded() *AppError               { return New(ErrQuotaExceeded, "1 NIK hanya boleh memiliki 1 tiket per event") }
 func StockUnavailable() *AppError            { return New(ErrStockUnavailable, "Stok tidak mencukupi") }
 func TokenInvalid() *AppError                { return New(ErrTokenInvalid, "Access Token tidak valid") }
 func TokenExpired() *AppError                { return New(ErrTokenExpired, "Waktu booking telah habis, silakan mulai ulang") }

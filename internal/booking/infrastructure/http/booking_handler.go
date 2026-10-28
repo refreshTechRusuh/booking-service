@@ -37,9 +37,9 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler, accessTokenSecret string) {
 		)
 	}
 
-	mux.Handle("POST /api/v1/bookings", withAccessToken(h.CreateBooking))
-	mux.Handle("GET /api/v1/bookings/{bookingId}", withAccessToken(h.GetBooking))
-	mux.Handle("GET /api/v1/events/{eventId}/stock/stream", withAccessToken(h.StreamStock))
+	mux.Handle("POST /api/booking/v1/create", withAccessToken(h.CreateBooking))
+	mux.Handle("GET /api/booking/v1/{bookingId}", withAccessToken(h.GetBooking))
+	mux.Handle("GET /api/booking/v1/event/{eventId}/stock/stream", withAccessToken(h.StreamStock))
 }
 
 // CreateBooking handles POST /api/v1/bookings

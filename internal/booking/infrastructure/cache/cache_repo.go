@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
@@ -61,9 +62,25 @@ func (r *CacheRepository) ValidateAccessToken(ctx context.Context, tokenStr stri
 // PublishStockChanged mempublish payload ke channel Redis Pub/Sub.
 func (r *CacheRepository) PublishStockChanged(ctx context.Context, eventID string, payload []byte) error {
 	channel := fmt.Sprintf("stock:%s", eventID)
-	return r.client.Do(ctx,
+	start := time.Now()
+	err := r.client.Do(ctx,
 		r.client.B().Publish().Channel(channel).Message(string(payload)).Build(),
 	).Error()
+	elapsed := fmt.Sprintf("%s", time.Since(start))
+	if err != nil {
+		r.log.ErrorContext(ctx, "redis publish failed",
+			slog.String("channel", channel),
+			slog.String("duration", elapsed),
+			slog.String("error", err.Error()),
+		)
+	} else {
+		r.log.InfoContext(ctx, "redis publish ok",
+			slog.String("channel", channel),
+			slog.Int("bytes", len(payload)),
+			slog.String("duration", elapsed),
+		)
+	}
+	return err
 }
 
 // SubscribeStockChanged subscribe ke channel Redis Pub/Sub untuk SSE stok.
@@ -77,27 +94,23 @@ func (r *CacheRepository) SubscribeStockChanged(ctx context.Context, eventID str
 	go func() {
 		defer close(ch)
 
-		if err := dedicatedClient.Do(ctx,
+		// valkey-go idiom: Receive() MENGIRIM perintah SUBSCRIBE lalu memblok
+		// selama koneksi hidup, memanggil callback untuk setiap pesan. Jangan
+		// kirim SUBSCRIBE terpisah lewat Do() sebelumnya — itu membuat koneksi
+		// sudah masuk mode subscribe sehingga Receive gagal dan subscriber hilang.
+		err := dedicatedClient.Receive(ctx,
 			dedicatedClient.B().Subscribe().Channel(channel).Build(),
-		).Error(); err != nil {
-			r.log.ErrorContext(ctx, "subscribe failed", slog.String("channel", channel), slog.Any("err", err))
-			return
-		}
-
-		for {
-			err := dedicatedClient.Receive(ctx,
-				dedicatedClient.B().Subscribe().Channel(channel).Build(),
-				func(m vk.PubSubMessage) {
-					select {
-					case ch <- []byte(m.Message):
-					default:
-						r.log.WarnContext(ctx, "stock SSE channel full, dropping", slog.String("eventId", eventID))
-					}
-				},
-			)
-			if err != nil {
-				return
-			}
+			func(m vk.PubSubMessage) {
+				select {
+				case ch <- []byte(m.Message):
+				default:
+					r.log.WarnContext(ctx, "stock SSE channel full, dropping", slog.String("eventId", eventID))
+				}
+			},
+		)
+		// Receive hanya kembali saat ctx dibatalkan (klien disconnect) atau koneksi putus.
+		if err != nil && ctx.Err() == nil {
+			r.log.ErrorContext(ctx, "subscribe ended with error", slog.String("channel", channel), slog.Any("err", err))
 		}
 	}()
 

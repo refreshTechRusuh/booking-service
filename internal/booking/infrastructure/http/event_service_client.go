@@ -28,10 +28,10 @@ func NewEventServiceClient(baseURL string, log *slog.Logger) *EventServiceClient
 	}
 }
 
-// MarkSoldOut memanggil POST /internal/events/{eventId}/sold-out ke event-service.
+// MarkSoldOut memanggil POST /internal/event/v1/{eventId}/sold-out ke event-service.
 // Idempoten: event-service mengembalikan 200 bila sudah sold-out sebelumnya.
 func (c *EventServiceClient) MarkSoldOut(ctx context.Context, eventID string) error {
-	url := fmt.Sprintf("%s/internal/events/%s/sold-out", c.baseURL, eventID)
+	url := fmt.Sprintf("%s/internal/event/v1/%s/sold-out", c.baseURL, eventID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return fmt.Errorf("event service client: build request: %w", err)

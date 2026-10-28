@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/refreshTechRusuh/booking-service/pkg/logctx"
 )
 
 // responseWriter wraps http.ResponseWriter untuk capture status code.
@@ -28,6 +29,21 @@ func (rw *responseWriter) WriteHeader(code int) {
 	}
 }
 
+// Flush meneruskan ke underlying ResponseWriter agar SSE (http.Flusher) tetap
+// berfungsi lewat middleware ini. Tanpa ini, type assertion w.(http.Flusher)
+// di handler SSE gagal ("SSE not supported").
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap mengekspos ResponseWriter asli untuk http.ResponseController (Go 1.20+),
+// sehingga interface opsional lain (Hijacker, dll.) tetap dapat diakses.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}
+
 // RequestLogger adalah middleware yang mencatat setiap inbound HTTP request:
 //   - method, path, status, duration
 //   - X-Transaction-Id (buat baru bila tidak ada di request)
@@ -44,6 +60,10 @@ func RequestLogger(log *slog.Logger) func(http.Handler) http.Handler {
 				txID = uuid.New().String()
 			}
 			w.Header().Set("X-Transaction-Id", txID)
+
+			// Titipkan txId ke context agar ikut otomatis di semua log hilir
+			// (handler, usecase, query DB) via ContextHandler.
+			r = r.WithContext(logctx.WithTxID(r.Context(), txID))
 
 			wrapped := wrapResponseWriter(w)
 			next.ServeHTTP(wrapped, r)

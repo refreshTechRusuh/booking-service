@@ -19,7 +19,7 @@ import (
 
 const (
 	maxTicketsPerBooking  = 3
-	maxTicketsPerNIK      = 3
+	maxTicketsPerNIK      = 1 // 1 NIK hanya boleh 1 tiket per event (BR-01)
 	paymentTTLMinutes     = 10
 	backDisabledThreshold = 30 // seconds
 )
@@ -211,6 +211,7 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 			ev := dto.StockEvent{
 				EventID:    eventID,
 				CategoryID: cs.CategoryID,
+				Name:       cs.Name,
 				Available:  cs.Available,
 			}
 			if len(categoryIDs) > 0 && !containsString(categoryIDs, cs.CategoryID) {
@@ -306,6 +307,34 @@ func (u *BookingUsecase) publishPostBooking(
 			Reason:     "HOLD",
 		}); err != nil {
 			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", err))
+		}
+	}
+
+	// 3. Redis Pub/Sub → SSE: kirim frame stok terbaru per kategori yang di-hold,
+	//    supaya klien SSE lain melihat stok TURUN live saat ada booking (bukan hanya
+	//    saat expire/sold-out). Snapshot available dibaca sekali setelah hold di-commit.
+	stocks, err := u.stockRepo.GetAvailableByEvent(ctx, b.EventID)
+	if err != nil {
+		u.log.WarnContext(ctx, "get available after hold failed", slog.Any("err", err))
+		return
+	}
+	stockMap := make(map[string]int, len(stocks))
+	nameMap := make(map[string]string, len(stocks))
+	for _, s := range stocks {
+		stockMap[s.CategoryID] = s.Available
+		nameMap[s.CategoryID] = s.Name
+	}
+	for _, h := range holdItems {
+		ev := dto.StockEvent{
+			EventID:    b.EventID,
+			CategoryID: h.CategoryID,
+			Name:       nameMap[h.CategoryID],
+			Available:  stockMap[h.CategoryID], // nilai available aktual setelah hold
+		}
+		if bz, marshalErr := json.Marshal(ev); marshalErr == nil {
+			if pubErr := u.cache.PublishStockChanged(ctx, b.EventID, bz); pubErr != nil {
+				u.log.WarnContext(ctx, "redis publish stock.changed (HOLD) failed", slog.Any("err", pubErr))
+			}
 		}
 	}
 }

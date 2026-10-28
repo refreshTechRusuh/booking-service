@@ -25,8 +25,8 @@ func NewWiredHandlerWithUC(
 ) (*Handler, *usecase.BookingUsecase) {
 	log := slog.Default()
 
-	bookingRepo := bookingdb.NewBookingRepository(pool)
-	stockRepo := bookingdb.NewStockRepository(pool)
+	bookingRepo := bookingdb.NewBookingRepository(pool, log)
+	stockRepo := bookingdb.NewStockRepository(pool, log)
 	dukcapilCl := newDukcapilClient(cfg.Dukcapil, log)
 	cacheRepo := cache.NewCacheRepository(valkeyClient, cfg.JWT.AccessTokenSecret, log)
 	eventProducer := event.NewKafkaProducer(producer, log)
