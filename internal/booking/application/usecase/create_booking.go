@@ -187,10 +187,11 @@ func (u *BookingUsecase) GetBooking(ctx context.Context, bookingID string) (dto.
 	}, nil
 }
 
-// StreamStock mengembalikan channel event stok dari Redis Pub/Sub.
-// Initial snapshot dikirim terlebih dahulu sebelum subscribe, sehingga client
-// tidak kehilangan state awal saat koneksi baru.
-func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, categoryIDs []string) (<-chan dto.StockEvent, error) {
+// StreamStock mengembalikan channel batch event stok dari Redis Pub/Sub.
+// Initial snapshot dikirim langsung saat connect. Selanjutnya, pesan Redis
+// di-accumulate ke buffer map dan di-flush setiap 1 detik sebagai satu
+// StockBatchEvent, sehingga client tidak kena flooding saat banyak booking serentak.
+func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string) (<-chan dto.StockBatchEvent, error) {
 	// Ambil snapshot awal dari DB — baca sebelum subscribe agar tidak ada gap.
 	snapshot, err := u.stockRepo.GetAvailableByEvent(ctx, eventID)
 	if err != nil {
@@ -202,47 +203,56 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 		return nil, apperror.Internal(err)
 	}
 
-	out := make(chan dto.StockEvent, 32)
+	out := make(chan dto.StockBatchEvent, 4)
 
 	go func() {
 		defer unsub()
 		defer close(out)
 
-		// 1. Kirim initial snapshot ke client.
+		// 1. Kirim initial snapshot langsung sebagai satu StockBatchEvent.
 		allSoldOut := len(snapshot) > 0
+		categories := make([]dto.StockEvent, 0, len(snapshot))
 		for _, cs := range snapshot {
 			if cs.Available > 0 {
 				allSoldOut = false
 			}
-			ev := dto.StockEvent{
+			categories = append(categories, dto.StockEvent{
 				EventID:    eventID,
 				CategoryID: cs.CategoryID,
 				Name:       cs.Name,
 				Available:  cs.Available,
-			}
-			if len(categoryIDs) > 0 && !containsString(categoryIDs, cs.CategoryID) {
-				continue
-			}
+			})
+		}
+
+		if allSoldOut && len(snapshot) > 0 {
 			select {
-			case out <- ev:
+			case out <- dto.StockBatchEvent{EventID: eventID, SoldOut: true}:
 			case <-ctx.Done():
 				return
 			}
+			return
 		}
-		// Bila semua kategori sudah 0 saat connect, kirim sold-out frame.
-		if allSoldOut && len(snapshot) > 0 {
+
+		if len(categories) > 0 {
 			select {
-			case out <- dto.StockEvent{EventID: eventID, SoldOut: true}:
+			case out <- dto.StockBatchEvent{EventID: eventID, Categories: categories}:
 			case <-ctx.Done():
 				return
 			}
 		}
 
-		// 2. Subscribe ke Redis Pub/Sub untuk update selanjutnya.
+		// 2. Accumulate Redis messages dan flush setiap 1 detik.
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		buffer := make(map[string]dto.StockEvent) // categoryID → latest StockEvent
+		soldOutFlag := false
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+
 			case msg, ok := <-msgCh:
 				if !ok {
 					return
@@ -252,14 +262,35 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 					u.log.WarnContext(ctx, "stock event unmarshal error", slog.Any("err", err))
 					continue
 				}
-				if len(categoryIDs) > 0 && !ev.SoldOut && !containsString(categoryIDs, ev.CategoryID) {
+				if ev.SoldOut {
+					soldOutFlag = true
+				} else {
+					buffer[ev.CategoryID] = ev
+				}
+
+			case <-ticker.C:
+				if soldOutFlag {
+					select {
+					case out <- dto.StockBatchEvent{EventID: eventID, SoldOut: true}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				if len(buffer) == 0 {
+					// Tidak ada perubahan sejak flush terakhir — tidak kirim frame kosong.
 					continue
 				}
+				vals := make([]dto.StockEvent, 0, len(buffer))
+				for _, ev := range buffer {
+					vals = append(vals, ev)
+				}
 				select {
-				case out <- ev:
+				case out <- dto.StockBatchEvent{EventID: eventID, Categories: vals}:
 				case <-ctx.Done():
 					return
 				}
+				// Clear buffer setelah flush.
+				buffer = make(map[string]dto.StockEvent)
 			}
 		}
 	}()
@@ -351,12 +382,3 @@ func (u *BookingUsecase) publishPostBooking(
 }
 
 // ---- Helpers -----------------------------------------------------------------
-
-func containsString(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}

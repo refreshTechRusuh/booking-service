@@ -65,6 +65,15 @@ type StockSnapshot struct {
 	Categories []StockEvent `json:"categories"`
 }
 
+// StockBatchEvent adalah frame SSE batch — semua kategori per event sekaligus.
+// Dikirim setiap 1 detik bila ada perubahan, atau langsung saat initial snapshot.
+// Menggantikan StockEvent per-frame untuk mengurangi flooding ke client.
+type StockBatchEvent struct {
+	EventID    string       `json:"eventId"`
+	Categories []StockEvent `json:"categories,omitempty"`
+	SoldOut    bool         `json:"soldOut,omitempty"` // true bila event ini sold-out total
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 // ToHoldItems mengkonversi items request ke []entity.HoldItem.

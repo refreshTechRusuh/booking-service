@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
@@ -89,18 +88,14 @@ func (h *Handler) GetBooking(w http.ResponseWriter, r *http.Request) {
 	apinizer.Success(w, "OK", resp)
 }
 
-// StreamStock handles GET /api/v1/events/{eventId}/stock/stream (SSE)
+// StreamStock handles GET /api/booking/v1/event/{eventId}/stock/stream (SSE)
+// Format data: StockBatchEvent — semua kategori sekaligus, dikirim setiap 1 detik.
+// Initial snapshot dikirim langsung saat koneksi tanpa delay.
 func (h *Handler) StreamStock(w http.ResponseWriter, r *http.Request) {
 	eventID := r.PathValue("eventId")
 	if eventID == "" {
 		http.Error(w, "eventId required", http.StatusBadRequest)
 		return
-	}
-
-	// Filter kategori opsional: ?categoryIds=cat1,cat2
-	var categoryIDs []string
-	if raw := r.URL.Query().Get("categoryIds"); raw != "" {
-		categoryIDs = strings.Split(raw, ",")
 	}
 
 	// Set SSE headers.
@@ -116,7 +111,7 @@ func (h *Handler) StreamStock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	stockCh, err := h.usecase.StreamStock(ctx, eventID, categoryIDs)
+	stockCh, err := h.usecase.StreamStock(ctx, eventID)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
