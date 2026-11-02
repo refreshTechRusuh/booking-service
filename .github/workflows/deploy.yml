@@ -63,7 +63,7 @@ jobs:
           flags: >-
             --allow-unauthenticated
             --set-env-vars=APP_ENV=${{ vars.APP_ENV }},APP_PORT=${{ vars.APP_PORT }},LOG_LEVEL=${{ vars.LOG_LEVEL }},LOG_FORMAT=${{ vars.LOG_FORMAT }},DB_HOST=${{ vars.DB_HOST }},DB_PORT=${{ vars.DB_PORT }},DB_USER=${{ vars.DB_USER }},DB_NAME=${{ vars.DB_NAME }},DB_SSL_MODE=${{ vars.DB_SSL_MODE }},DB_MAX_OPEN_CONNS=${{ vars.DB_MAX_OPEN_CONNS }},DB_MAX_IDLE_CONNS=${{ vars.DB_MAX_IDLE_CONNS }},DB_CONN_TIMEOUT_SECONDS=${{ vars.DB_CONN_TIMEOUT_SECONDS }},KAFKA_BROKERS=${{ vars.KAFKA_BROKERS }},KAFKA_TLS=${{ vars.KAFKA_TLS }},VALKEY_ADDR=${{ vars.VALKEY_ADDR }},VALKEY_TLS=${{ vars.VALKEY_TLS }},DUKCAPIL_BASE_URL=${{ vars.DUKCAPIL_BASE_URL }},DUKCAPIL_TIMEOUT_MS=${{ vars.DUKCAPIL_TIMEOUT_MS }},DUKCAPIL_FAIL_OPEN=${{ vars.DUKCAPIL_FAIL_OPEN }},EVENT_SERVICE_URL=${{ vars.EVENT_SERVICE_URL }},MIDTRANS_ENV=${{ vars.MIDTRANS_ENV }},SSE_HEARTBEAT_SECONDS=${{ vars.SSE_HEARTBEAT_SECONDS }}
-            --set-secrets=DB_PASSWORD=db-password:latest,ACCESS_TOKEN_SECRET=access-token-secret:latest,KAFKA_USERNAME=confluent-api-key:latest,KAFKA_PASSWORD=confluent-api-secret:latest,VALKEY_PASSWORD=redis-password:latest,MIDTRANS_SERVER_KEY=midtrans-server-key:latest
+            --set-secrets=DB_PASSWORD=db-password:latest,ACCESS_TOKEN_SECRET=access-token-secret:latest,VALKEY_PASSWORD=redis-password:latest,MIDTRANS_SERVER_KEY=midtrans-server-key:latest
 
       - name: Route traffic to new revision
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
