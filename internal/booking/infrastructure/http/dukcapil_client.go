@@ -14,12 +14,9 @@ import (
 
 // dukcapilClient mengimplementasikan outbound.IDukcapilClient.
 //
-// TODO(BE-1-INTEGRATION): Saat BE-1 selesai, konfirmasi:
-//  1. URL endpoint Dukcapil dari BE-1 → set DUKCAPIL_BASE_URL di .env
-//  2. Format request/response sama dengan mock-dukcapil/main.go
-//     (POST /internal/dukcapil/verify, field: nik, nama, tglLahir, namaIbu)
-//  3. Auth header jika dibutuhkan (tambahkan ke Verify() di sini)
-//  4. DUKCAPIL_FAIL_OPEN=false di production (sekarang true untuk dev)
+// Endpoint: POST /api/dukcapil/v1/verify (sesuai dukcapil-mock BE-1)
+// Field: nik, nama, tglLahir, namaIbu
+// Response: {status, message, data: {valid: bool}}
 type dukcapilClient struct {
 	baseURL  string
 	timeout  time.Duration
@@ -62,10 +59,10 @@ func (c *dukcapilClient) Verify(ctx context.Context, nik, nama, tglLahir, namaIb
 	start := time.Now()
 	c.log.InfoContext(ctx, "dukcapil verify request",
 		slog.String("nik", nik[:4]+"****"), // mask NIK, tampilkan 4 digit pertama saja
-		slog.String("url", c.baseURL+"/internal/dukcapil/verify"),
+		slog.String("url", c.baseURL+"/api/dukcapil/v1/verify"),
 	)
 
-	resp, err := http.Post(c.baseURL+"/internal/dukcapil/verify", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(c.baseURL+"/api/dukcapil/v1/verify", "application/json", bytes.NewReader(body))
 	if err != nil {
 		c.log.ErrorContext(ctx, "dukcapil request failed",
 			slog.String("nik", nik[:4]+"****"),
