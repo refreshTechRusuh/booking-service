@@ -16,7 +16,8 @@ type IBookingUsecase interface {
 	// GetBooking mengembalikan status booking + sisa TTL + backDisabled flag.
 	GetBooking(ctx context.Context, bookingID string) (dto.BookingStatusResponse, error)
 
-	// StreamStock dipanggil oleh SSE handler untuk mendapatkan channel update stok.
+	// StreamStock dipanggil oleh SSE handler untuk mendapatkan channel batch update stok.
+	// Frame dikirim langsung saat connect (initial snapshot) dan setiap 1 detik bila ada perubahan.
 	// Handler menutup done channel saat koneksi SSE terputus.
-	StreamStock(ctx context.Context, eventID string, categoryIDs []string) (<-chan dto.StockEvent, error)
+	StreamStock(ctx context.Context, eventID string) (<-chan dto.StockBatchEvent, error)
 }

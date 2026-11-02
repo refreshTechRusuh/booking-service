@@ -331,11 +331,11 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 
 		// StreamStock harus kirim snapshot (stok=0) tapi TIDAK sold-out frame
 		ctx, cancel := context.WithCancel(context.Background())
-		ch, err := uc.StreamStock(ctx, "evt-1", nil)
+		ch, err := uc.StreamStock(ctx, "evt-1")
 		require.NoError(t, err)
 
 		// Kumpulkan events awal
-		var events []dto.StockEvent
+		var events []dto.StockBatchEvent
 		timeout := time.After(200 * time.Millisecond)
 		done := false
 		for !done {
@@ -380,11 +380,11 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 		// StreamStock dengan stok=0 + no HELD → harus kirim soldOut frame
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		ch, err := uc.StreamStock(ctx, "evt-1", nil)
+		ch, err := uc.StreamStock(ctx, "evt-1")
 		require.NoError(t, err)
 
 		// Kumpulkan events
-		var events []dto.StockEvent
+		var events []dto.StockBatchEvent
 		timeout := time.After(300 * time.Millisecond)
 		done := false
 		for !done {
@@ -417,12 +417,9 @@ func TestSoldOut_PublishedWhenAllStockZero(t *testing.T) {
 // ============================================================
 
 // TestStreamStock_InitialSnapshot memverifikasi bahwa saat SSE connect:
-//   - Snapshot stok dari DB dikirim ke klien SEBELUM subscribe Redis Pub/Sub
-//   - Tidak ada gap antara snapshot dan live stream
-//   - CategoryIDs filter bekerja pada snapshot
-//
-// Ini memastikan user yang baru connect langsung melihat stok terkini,
-// bukan menunggu event berikutnya dari Kafka.
+//   - Snapshot stok dari DB dikirim sebagai SATU StockBatchEvent berisi semua kategori
+//   - Initial snapshot dikirim langsung tanpa tunggu ticker 1 detik
+//   - Format batch (bukan per-frame per-kategori)
 func TestStreamStock_InitialSnapshot(t *testing.T) {
 	bookingRepo := newSweepableBookingRepo()
 	stockRepo := newSweepableStockRepo(
@@ -438,11 +435,11 @@ func TestStreamStock_InitialSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ch, err := uc.StreamStock(ctx, "evt-1", nil) // tanpa filter
+	ch, err := uc.StreamStock(ctx, "evt-1")
 	require.NoError(t, err)
 
-	// Kumpulkan semua frames dalam window pendek
-	var events []dto.StockEvent
+	// Kumpulkan semua frames dalam window pendek — snapshot harus langsung datang
+	var batches []dto.StockBatchEvent
 	timeout := time.After(200 * time.Millisecond)
 	done := false
 	for !done {
@@ -451,21 +448,23 @@ func TestStreamStock_InitialSnapshot(t *testing.T) {
 			if !ok {
 				done = true
 			} else {
-				events = append(events, ev)
+				batches = append(batches, ev)
 			}
 		case <-timeout:
 			done = true
 		}
 	}
 
-	// Harus menerima 3 frames (satu per kategori)
-	require.GreaterOrEqual(t, len(events), 1, "minimal 1 snapshot frame harus diterima")
+	// Harus menerima minimal 1 batch frame
+	require.GreaterOrEqual(t, len(batches), 1, "minimal 1 StockBatchEvent harus diterima")
 
-	// Verifikasi setiap kategori ada di snapshot
+	// Kumpulkan semua kategori dari semua batch yang diterima
 	byCategory := make(map[string]int)
-	for _, ev := range events {
-		if !ev.SoldOut {
-			byCategory[ev.CategoryID] = ev.Available
+	for _, batch := range batches {
+		if !batch.SoldOut {
+			for _, cat := range batch.Categories {
+				byCategory[cat.CategoryID] = cat.Available
+			}
 		}
 	}
 
@@ -474,11 +473,12 @@ func TestStreamStock_InitialSnapshot(t *testing.T) {
 	assert.Equal(t, 0, byCategory["cat-festival"], "snapshot cat-festival harus available=0")
 }
 
-// TestStreamStock_CategoryFilter memverifikasi bahwa filter ?categoryIds= bekerja di snapshot.
-func TestStreamStock_CategoryFilter(t *testing.T) {
+// TestStreamStock_ThrottleBatch memverifikasi bahwa multiple Redis messages dalam < 1 detik
+// di-flush sebagai satu StockBatchEvent (bukan satu frame per message).
+func TestStreamStock_ThrottleBatch(t *testing.T) {
 	bookingRepo := newSweepableBookingRepo()
 	stockRepo := newSweepableStockRepo(
-		map[string]int{"cat-vip": 37, "cat-reg": 120},
+		map[string]int{"cat-vip": 50, "cat-reg": 100},
 		map[string]int64{"cat-vip": 500000, "cat-reg": 250000},
 	)
 	cache := newTrackingCache()
@@ -488,32 +488,56 @@ func TestStreamStock_CategoryFilter(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Filter hanya cat-vip
-	ch, err := uc.StreamStock(ctx, "evt-1", []string{"cat-vip"})
+	ch, err := uc.StreamStock(ctx, "evt-1")
 	require.NoError(t, err)
 
-	var events []dto.StockEvent
-	timeout := time.After(200 * time.Millisecond)
+	// Drain initial snapshot
+	time.Sleep(50 * time.Millisecond)
+	drainTimeout := time.After(100 * time.Millisecond)
+drainLoop:
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				break drainLoop
+			}
+		case <-drainTimeout:
+			break drainLoop
+		}
+	}
+
+	// Publish 5 Redis messages untuk cat-vip dalam waktu cepat (< 100ms)
+	for i := 49; i >= 45; i-- {
+		ev := dto.StockEvent{EventID: "evt-1", CategoryID: "cat-vip", Available: i}
+		b, _ := json.Marshal(ev)
+		cache.PublishStockChanged(ctx, "evt-1", b) //nolint:errcheck
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Tunggu sampai ticker 1 detik flush
+	var batches []dto.StockBatchEvent
+	collectTimeout := time.After(1500 * time.Millisecond)
+collectLoop:
 	for {
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				goto done
+				break collectLoop
 			}
-			events = append(events, ev)
-		case <-timeout:
-			goto done
+			batches = append(batches, ev)
+		case <-collectTimeout:
+			break collectLoop
 		}
 	}
-done:
-	// Hanya cat-vip yang boleh ada
-	for _, ev := range events {
-		if !ev.SoldOut {
-			assert.Equal(t, "cat-vip", ev.CategoryID,
-				"filter harus mengecualikan cat-reg dari snapshot")
-		}
+
+	// Harus menerima hanya 1 batch (bukan 5 frame terpisah)
+	require.Equal(t, 1, len(batches),
+		"5 Redis messages dalam < 1 detik harus di-flush sebagai 1 StockBatchEvent")
+	// Available harus nilai terakhir (45 = hasil overwrite buffer)
+	if len(batches) > 0 && len(batches[0].Categories) > 0 {
+		assert.Equal(t, 45, batches[0].Categories[0].Available,
+			"buffer harus overwrite dengan nilai terbaru")
 	}
-	assert.GreaterOrEqual(t, len(events), 1, "minimal 1 event harus diterima untuk cat-vip")
 }
 
 // ============================================================
@@ -538,7 +562,7 @@ func TestStreamStock_LiveUpdate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ch, err := uc.StreamStock(ctx, "evt-1", nil)
+	ch, err := uc.StreamStock(ctx, "evt-1")
 	require.NoError(t, err)
 
 	// Drain snapshot
@@ -565,14 +589,15 @@ drainLoop:
 	b, _ := json.Marshal(liveUpdate)
 	cache.PublishStockChanged(context.Background(), "evt-1", b) //nolint:errcheck
 
-	// Tunggu update masuk ke channel SSE
+	// Tunggu batch frame dari ticker 1 detik
 	select {
-	case ev := <-ch:
-		assert.Equal(t, "cat-vip", ev.CategoryID)
-		assert.Equal(t, 49, ev.Available, "live update harus diterima dengan available=49")
-		assert.False(t, ev.SoldOut)
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("live update tidak diterima SSE client dalam 500ms")
+	case batch := <-ch:
+		require.False(t, batch.SoldOut, "live update bukan sold-out")
+		require.GreaterOrEqual(t, len(batch.Categories), 1, "batch harus punya minimal 1 kategori")
+		assert.Equal(t, "cat-vip", batch.Categories[0].CategoryID)
+		assert.Equal(t, 49, batch.Categories[0].Available, "live update harus diterima dengan available=49")
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("live update tidak diterima SSE client dalam 1.5 detik (ticker 1 detik)")
 	}
 }
 

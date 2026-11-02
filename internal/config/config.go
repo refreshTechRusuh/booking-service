@@ -98,7 +98,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		App: AppConfig{
 			Env:  getEnv("APP_ENV", "local"),
-			Port: getEnvInt("APP_PORT", 8081),
+			Port: getEnvInt("PORT", getEnvInt("APP_PORT", 8081)),
 		},
 		Log: LogConfig{
 			Level:  getEnv("LOG_LEVEL", "info"),

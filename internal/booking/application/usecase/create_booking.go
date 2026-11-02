@@ -60,6 +60,12 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 		return dto.CreateBookingResponse{}, apperror.TokenInvalid()
 	}
 
+	// Validasi: booking TTL dari Queue Service belum expired.
+	// BookingTTLExpiresAt = 0 berarti tidak ada TTL (token lokal/dev tanpa TTL), lewatkan.
+	if req.BookingTTLExpiresAt > 0 && time.Now().Unix() > req.BookingTTLExpiresAt {
+		return dto.CreateBookingResponse{}, apperror.TokenExpired()
+	}
+
 	// ── 4. Verifikasi Dukcapil per attendee SEBELUM buka transaksi (network call, tidak perlu tx)
 	for _, item := range req.Items {
 		for _, a := range item.Attendees {
@@ -181,10 +187,11 @@ func (u *BookingUsecase) GetBooking(ctx context.Context, bookingID string) (dto.
 	}, nil
 }
 
-// StreamStock mengembalikan channel event stok dari Redis Pub/Sub.
-// Initial snapshot dikirim terlebih dahulu sebelum subscribe, sehingga client
-// tidak kehilangan state awal saat koneksi baru.
-func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, categoryIDs []string) (<-chan dto.StockEvent, error) {
+// StreamStock mengembalikan channel batch event stok dari Redis Pub/Sub.
+// Initial snapshot dikirim langsung saat connect. Selanjutnya, pesan Redis
+// di-accumulate ke buffer map dan di-flush setiap 1 detik sebagai satu
+// StockBatchEvent, sehingga client tidak kena flooding saat banyak booking serentak.
+func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string) (<-chan dto.StockBatchEvent, error) {
 	// Ambil snapshot awal dari DB — baca sebelum subscribe agar tidak ada gap.
 	snapshot, err := u.stockRepo.GetAvailableByEvent(ctx, eventID)
 	if err != nil {
@@ -196,47 +203,56 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 		return nil, apperror.Internal(err)
 	}
 
-	out := make(chan dto.StockEvent, 32)
+	out := make(chan dto.StockBatchEvent, 4)
 
 	go func() {
 		defer unsub()
 		defer close(out)
 
-		// 1. Kirim initial snapshot ke client.
+		// 1. Kirim initial snapshot langsung sebagai satu StockBatchEvent.
 		allSoldOut := len(snapshot) > 0
+		categories := make([]dto.StockEvent, 0, len(snapshot))
 		for _, cs := range snapshot {
 			if cs.Available > 0 {
 				allSoldOut = false
 			}
-			ev := dto.StockEvent{
+			categories = append(categories, dto.StockEvent{
 				EventID:    eventID,
 				CategoryID: cs.CategoryID,
 				Name:       cs.Name,
 				Available:  cs.Available,
-			}
-			if len(categoryIDs) > 0 && !containsString(categoryIDs, cs.CategoryID) {
-				continue
-			}
+			})
+		}
+
+		if allSoldOut && len(snapshot) > 0 {
 			select {
-			case out <- ev:
+			case out <- dto.StockBatchEvent{EventID: eventID, SoldOut: true}:
 			case <-ctx.Done():
 				return
 			}
+			return
 		}
-		// Bila semua kategori sudah 0 saat connect, kirim sold-out frame.
-		if allSoldOut && len(snapshot) > 0 {
+
+		if len(categories) > 0 {
 			select {
-			case out <- dto.StockEvent{EventID: eventID, SoldOut: true}:
+			case out <- dto.StockBatchEvent{EventID: eventID, Categories: categories}:
 			case <-ctx.Done():
 				return
 			}
 		}
 
-		// 2. Subscribe ke Redis Pub/Sub untuk update selanjutnya.
+		// 2. Accumulate Redis messages dan flush setiap 1 detik.
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		buffer := make(map[string]dto.StockEvent) // categoryID → latest StockEvent
+		soldOutFlag := false
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+
 			case msg, ok := <-msgCh:
 				if !ok {
 					return
@@ -246,14 +262,35 @@ func (u *BookingUsecase) StreamStock(ctx context.Context, eventID string, catego
 					u.log.WarnContext(ctx, "stock event unmarshal error", slog.Any("err", err))
 					continue
 				}
-				if len(categoryIDs) > 0 && !ev.SoldOut && !containsString(categoryIDs, ev.CategoryID) {
+				if ev.SoldOut {
+					soldOutFlag = true
+				} else {
+					buffer[ev.CategoryID] = ev
+				}
+
+			case <-ticker.C:
+				if soldOutFlag {
+					select {
+					case out <- dto.StockBatchEvent{EventID: eventID, SoldOut: true}:
+					case <-ctx.Done():
+					}
+					return
+				}
+				if len(buffer) == 0 {
+					// Tidak ada perubahan sejak flush terakhir — tidak kirim frame kosong.
 					continue
 				}
+				vals := make([]dto.StockEvent, 0, len(buffer))
+				for _, ev := range buffer {
+					vals = append(vals, ev)
+				}
 				select {
-				case out <- ev:
+				case out <- dto.StockBatchEvent{EventID: eventID, Categories: vals}:
 				case <-ctx.Done():
 					return
 				}
+				// Clear buffer setelah flush.
+				buffer = make(map[string]dto.StockEvent)
 			}
 		}
 	}()
@@ -297,26 +334,13 @@ func (u *BookingUsecase) publishPostBooking(
 		u.log.ErrorContext(ctx, "publish booking.created failed", slog.Any("err", err))
 	}
 
-	// 2. stock.changed (reason=HOLD) → Queue Service update cache stok + SSE broadcast
-	for _, h := range holdItems {
-		if err := u.producer.PublishStockChanged(ctx, b.EventID, kafka.StockChangedEvent{
-			EventID:    b.EventID,
-			CategoryID: h.CategoryID,
-			Delta:      -h.Qty, // negatif = hold
-			Available:  -1,     // -1 = "tidak tahu nilai sekarang"; Queue hitung dari DB bila perlu
-			Reason:     "HOLD",
-		}); err != nil {
-			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", err))
-		}
-	}
-
-	// 3. Redis Pub/Sub → SSE: kirim frame stok terbaru per kategori yang di-hold,
-	//    supaya klien SSE lain melihat stok TURUN live saat ada booking (bukan hanya
-	//    saat expire/sold-out). Snapshot available dibaca sekali setelah hold di-commit.
+	// 2. Baca snapshot stok dari DB sekali — dipakai bersama oleh Kafka (stock.changed)
+	//    dan Redis Pub/Sub (SSE), sehingga kedua consumer menerima nilai aktual yang sama.
 	stocks, err := u.stockRepo.GetAvailableByEvent(ctx, b.EventID)
 	if err != nil {
 		u.log.WarnContext(ctx, "get available after hold failed", slog.Any("err", err))
-		return
+		// Lanjutkan: Kafka tetap di-publish dengan Available=0 (lebih aman daripada -1),
+		// queue-service akan recalculate dari DB via WarmStock saat event berikutnya.
 	}
 	stockMap := make(map[string]int, len(stocks))
 	nameMap := make(map[string]string, len(stocks))
@@ -324,6 +348,24 @@ func (u *BookingUsecase) publishPostBooking(
 		stockMap[s.CategoryID] = s.Available
 		nameMap[s.CategoryID] = s.Name
 	}
+
+	// 3. stock.changed (reason=HOLD) → Queue Service update cache stok
+	//    Available diisi nilai aktual dari DB agar roomcap queue-service tetap akurat.
+	for _, h := range holdItems {
+		if err := u.producer.PublishStockChanged(ctx, b.EventID, kafka.StockChangedEvent{
+			EventID:    b.EventID,
+			CategoryID: h.CategoryID,
+			Delta:      -h.Qty,           // negatif = hold
+			Available:  stockMap[h.CategoryID], // nilai aktual post-hold dari DB
+			Reason:     "HOLD",
+		}); err != nil {
+			u.log.ErrorContext(ctx, "publish stock.changed failed", slog.Any("err", err))
+		}
+	}
+
+	// 4. Redis Pub/Sub → SSE: kirim frame stok terbaru per kategori yang di-hold,
+	//    supaya klien SSE lain melihat stok TURUN live saat ada booking.
+	//    Menggunakan stockMap yang sudah dibaca di langkah 2 (tidak perlu baca DB lagi).
 	for _, h := range holdItems {
 		ev := dto.StockEvent{
 			EventID:    b.EventID,
@@ -340,12 +382,3 @@ func (u *BookingUsecase) publishPostBooking(
 }
 
 // ---- Helpers -----------------------------------------------------------------
-
-func containsString(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
