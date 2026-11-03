@@ -13,8 +13,9 @@ import (
 type contextKey string
 
 const (
-	ctxUserID      contextKey = "userId"
-	ctxAccessToken contextKey = "accessTokenClaims"
+	ctxUserID        contextKey = "userId"
+	ctxAccessToken   contextKey = "accessTokenClaims"
+	ctxPaymentToken  contextKey = "paymentTokenClaims"
 )
 
 // AccessTokenClaims adalah claim dari Access Token yang diterbitkan Queue Service.
@@ -74,6 +75,40 @@ func GetAccessTokenClaims(ctx context.Context) (*AccessTokenClaims, bool) {
 	return v, ok
 }
 
+// PaymentTokenClaims adalah claim dari Payment Token yang diterbitkan booking-service.
+type PaymentTokenClaims struct {
+	BookingID string `json:"bookingId"`
+	EventID   string `json:"eventId"`
+	jwt.RegisteredClaims
+}
+
+// RequirePaymentToken memvalidasi X-Payment-Token header (JWT HS256 dari booking-service).
+// Jika tidak ada, expired, atau signature tidak valid → 401.
+func RequirePaymentToken(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tokenStr := r.Header.Get("X-Payment-Token")
+			if tokenStr == "" {
+				http.Error(w, `{"status":"401","message":"Payment Token tidak ada","data":{}}`, http.StatusUnauthorized)
+				return
+			}
+			claims, err := parsePaymentToken(tokenStr, secret)
+			if err != nil {
+				http.Error(w, `{"status":"401","message":"Payment Token tidak valid atau sudah expired","data":{}}`, http.StatusUnauthorized)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), ctxPaymentToken, claims))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// GetPaymentTokenClaims mengambil PaymentTokenClaims dari context.
+func GetPaymentTokenClaims(ctx context.Context) (*PaymentTokenClaims, bool) {
+	v, ok := ctx.Value(ctxPaymentToken).(*PaymentTokenClaims)
+	return v, ok
+}
+
 // GetUserID mengambil userId dari context (di-set oleh OptionalAuth jika ada JWT).
 func GetUserID(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(ctxUserID).(string)
@@ -130,6 +165,20 @@ func parseUserJWT(tokenStr, secret string) (string, bool) {
 
 func parseAccessToken(tokenStr, secret string) (*AccessTokenClaims, error) {
 	claims := &AccessTokenClaims{}
+	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return claims, nil
+}
+
+func parsePaymentToken(tokenStr, secret string) (*PaymentTokenClaims, error) {
+	claims := &PaymentTokenClaims{}
 	_, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, jwt.ErrSignatureInvalid

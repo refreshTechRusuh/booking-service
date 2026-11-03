@@ -84,6 +84,13 @@ type IEventServiceClient interface {
 	MarkSoldOut(ctx context.Context, eventID string) error
 }
 
+// IPaymentTokenSigner menerbitkan Payment Token JWT yang dipakai payment-service.
+type IPaymentTokenSigner interface {
+	// Sign menerbitkan JWT HS256 dengan bookingId + eventId sebagai claims.
+	// exp = paymentExpiresAt (UNIX timestamp).
+	Sign(bookingID, eventID string, paymentExpiresAt int64) (string, error)
+}
+
 // IEventProducer mempublish event ke Kafka.
 type IEventProducer interface {
 	PublishBookingCreated(ctx context.Context, eventID string, payload any) error

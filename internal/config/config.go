@@ -61,7 +61,8 @@ type KafkaConfig struct {
 }
 
 type JWTConfig struct {
-	AccessTokenSecret string
+	AccessTokenSecret    string
+	PaymentTokenSecret   string
 }
 
 type DukcapilConfig struct {
@@ -127,7 +128,8 @@ func Load() (*Config, error) {
 			TLS:      getEnvBool("KAFKA_TLS", false),
 		},
 		JWT: JWTConfig{
-			AccessTokenSecret: mustEnv("ACCESS_TOKEN_SECRET"),
+			AccessTokenSecret:  mustEnv("ACCESS_TOKEN_SECRET"),
+			PaymentTokenSecret: mustEnv("PAYMENT_TOKEN_SECRET"),
 		},
 		Dukcapil: DukcapilConfig{
 			BaseURL:   getEnv("DUKCAPIL_BASE_URL", "http://localhost:8085"),
@@ -145,6 +147,12 @@ func Load() (*Config, error) {
 		SSE: SSEConfig{
 			HeartbeatSeconds: getEnvInt("SSE_HEARTBEAT_SECONDS", 30),
 		},
+	}
+
+	// Produksi: kedua secret tidak boleh sama agar token antrian tidak bisa dipakai untuk bayar.
+	if cfg.App.Env == "production" && cfg.JWT.AccessTokenSecret == cfg.JWT.PaymentTokenSecret {
+		slog.Error("ACCESS_TOKEN_SECRET dan PAYMENT_TOKEN_SECRET tidak boleh sama di production")
+		os.Exit(1)
 	}
 
 	return cfg, nil

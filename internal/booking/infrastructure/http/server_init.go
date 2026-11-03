@@ -9,6 +9,7 @@ import (
 	"github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/cache"
 	bookingdb "github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/db"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/event"
+	"github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/token"
 	"github.com/refreshTechRusuh/booking-service/internal/config"
 	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
 	vk "github.com/valkey-io/valkey-go"
@@ -30,9 +31,10 @@ func NewWiredHandlerWithUC(
 	dukcapilCl := newDukcapilClient(cfg.Dukcapil, log)
 	cacheRepo := cache.NewCacheRepository(valkeyClient, cfg.JWT.AccessTokenSecret, log)
 	eventProducer := event.NewKafkaProducer(producer, log)
+	paymentTokenSigner := token.NewPaymentTokenSigner(cfg.JWT.PaymentTokenSecret)
 
 	eventClient := NewEventServiceClient(cfg.EventSvc.BaseURL, log)
 
-	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, eventClient, log)
+	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, eventClient, paymentTokenSigner, log)
 	return NewHandler(uc), uc
 }

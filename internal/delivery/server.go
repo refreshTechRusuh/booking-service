@@ -33,7 +33,7 @@ func New(
 	mux := http.NewServeMux()
 
 	handler, uc := bookinghttp.NewWiredHandlerWithUC(ctx, cfg, pool, valkeyClient, producer)
-	bookinghttp.RegisterRoutes(mux, handler, cfg.JWT.AccessTokenSecret)
+	bookinghttp.RegisterRoutes(mux, handler, cfg.JWT.AccessTokenSecret, cfg.JWT.PaymentTokenSecret)
 
 	mux.HandleFunc("GET /sys/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
