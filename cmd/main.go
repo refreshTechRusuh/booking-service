@@ -15,6 +15,7 @@ import (
 	pkgdb "github.com/refreshTechRusuh/booking-service/pkg/db"
 	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
 	"github.com/refreshTechRusuh/booking-service/pkg/middleware"
+	pkgotel "github.com/refreshTechRusuh/booking-service/pkg/otel"
 	pkgvalkey "github.com/refreshTechRusuh/booking-service/pkg/valkey"
 )
 
@@ -28,6 +29,20 @@ func main() {
 
 	rootCtx, cancelRoot := context.WithCancel(context.Background())
 	defer cancelRoot()
+
+	// Setup OpenTelemetry TracerProvider.
+	// Di Cloud Run: export ke GCP Cloud Trace via WIF credential.
+	// Di lokal: set OTEL_ENABLED=false untuk skip (default: enabled).
+	otelShutdown, err := pkgotel.SetupTracerProvider(rootCtx, "booking-service", "1.0.0")
+	if err != nil {
+		slog.Warn("otel: failed to setup tracer provider, tracing disabled", "err", err)
+	} else {
+		defer func() {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = otelShutdown(shutCtx)
+		}()
+	}
 
 	pool, err := pkgdb.NewPool(rootCtx, cfg.DB)
 	if err != nil {

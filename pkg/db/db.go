@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/refreshTechRusuh/booking-service/internal/config"
 )
 
 // NewPool membuat pgxpool.Pool dengan konfigurasi dari Config.
+// otelpgx.NewTracer() di-inject ke ConnConfig.Tracer sehingga setiap query
+// otomatis menghasilkan child span di trace aktif.
 func NewPool(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN())
 	if err != nil {
@@ -22,6 +25,9 @@ func NewPool(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 	poolCfg.MaxConnLifetime = 1 * time.Hour
 	poolCfg.MaxConnIdleTime = 30 * time.Minute
 	poolCfg.HealthCheckPeriod = 1 * time.Minute
+
+	// Inject OTel tracer — span per query dengan db.statement (placeholder, bukan nilai).
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
