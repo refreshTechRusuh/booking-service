@@ -62,8 +62,14 @@ func (p *Producer) Publish(ctx context.Context, topic string, key string, payloa
 		Time:  time.Now(),
 	}
 
+	// Buka span kafka.produce dan inject traceparent ke message header.
+	ctx, span := StartProduceSpan(ctx, topic)
+	defer span.End()
+	InjectTraceContext(ctx, &msg)
+
 	start := time.Now()
 	if err := p.writer.WriteMessages(ctx, msg); err != nil {
+		span.RecordError(err)
 		p.log.ErrorContext(ctx, "kafka publish failed",
 			slog.String("topic", topic),
 			slog.String("key", key),

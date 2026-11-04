@@ -34,7 +34,10 @@ jobs:
       - name: Vet & unit test
         run: |
           go vet ./...
-          go test ./...
+          go test ./... -coverprofile=coverage.out
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
+          echo "Coverage: ${COVERAGE}%"
+          awk "BEGIN{if(${COVERAGE}+0<90){print \"Coverage \"${COVERAGE}\"%% below 90%\"; exit 1}}"
 
       - name: Authenticate to Google Cloud (WIF)
         id: auth
@@ -71,6 +74,8 @@ jobs:
           region: ${{ env.REGION }}
           image: ${{ env.IMAGE }}:${{ github.sha }}
           env_vars: |
+            OTEL_ENABLED=${{ vars.OTEL_ENABLED }}
+            OTEL_SAMPLE_RATIO=${{ vars.OTEL_SAMPLE_RATIO }}
             APP_ENV=${{ vars.APP_ENV }}
             APP_PORT=${{ vars.APP_PORT }}
             LOG_LEVEL=${{ vars.LOG_LEVEL }}
