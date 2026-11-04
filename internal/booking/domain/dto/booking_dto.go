@@ -40,6 +40,7 @@ type CreateBookingResponse struct {
 	Status           string `json:"status"`
 	Total            int64  `json:"total"`
 	PaymentExpiresAt string `json:"paymentExpiresAt"`
+	PaymentToken     string `json:"paymentToken"`
 }
 
 // BookingStatusResponse adalah response GET /bookings/{bookingId}.

@@ -26,14 +26,15 @@ const (
 
 // BookingUsecase mengimplementasikan inbound.IBookingUsecase.
 type BookingUsecase struct {
-	pool        *pgxpool.Pool
-	bookingRepo outbound.IBookingRepository
-	stockRepo   outbound.IStockRepository
-	dukcapil    outbound.IDukcapilClient
-	cache       outbound.ICacheRepository
-	producer    outbound.IEventProducer
-	eventClient outbound.IEventServiceClient
-	log         *slog.Logger
+	pool         *pgxpool.Pool
+	bookingRepo  outbound.IBookingRepository
+	stockRepo    outbound.IStockRepository
+	dukcapil     outbound.IDukcapilClient
+	cache        outbound.ICacheRepository
+	producer     outbound.IEventProducer
+	eventClient  outbound.IEventServiceClient
+	paymentToken outbound.IPaymentTokenSigner
+	log          *slog.Logger
 }
 
 func NewBookingUsecase(
@@ -44,12 +45,13 @@ func NewBookingUsecase(
 	cache outbound.ICacheRepository,
 	producer outbound.IEventProducer,
 	eventClient outbound.IEventServiceClient,
+	paymentToken outbound.IPaymentTokenSigner,
 	log *slog.Logger,
 ) *BookingUsecase {
 	return &BookingUsecase{
 		pool: pool, bookingRepo: bookingRepo, stockRepo: stockRepo,
 		dukcapil: dukcapil, cache: cache, producer: producer,
-		eventClient: eventClient, log: log,
+		eventClient: eventClient, paymentToken: paymentToken, log: log,
 	}
 }
 
@@ -152,6 +154,13 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 			return dto.CreateBookingResponse{}, apperror.Internal(err)
 		}
 
+		// Terbitkan Payment Token — exp = paymentExpiresAt agar berlaku selama TTL bayar (10 mnt).
+		paymentToken, err := u.paymentToken.Sign(bookingID, req.EventID, paymentExpiresAt.Unix())
+		if err != nil {
+			u.log.ErrorContext(ctx, "sign payment token failed", slog.Any("err", err))
+			return dto.CreateBookingResponse{}, apperror.Internal(err)
+		}
+
 		// Publish events setelah commit (best-effort, tidak rollback booking)
 		go u.publishPostBooking(context.WithoutCancel(ctx), booking, items, holdItems, totalAmount)
 
@@ -160,6 +169,7 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 			Status:           string(entity.BookingStatusHeld),
 			Total:            totalAmount,
 			PaymentExpiresAt: paymentExpiresAt.UTC().Format(time.RFC3339),
+			PaymentToken:     paymentToken,
 		}, nil
 	})
 }

@@ -27,17 +27,26 @@ func NewHandler(usecase inbound.IBookingUsecase) *Handler {
 
 // RegisterRoutes mendaftarkan semua route booking ke mux.
 // Dipanggil dari delivery/server.go.
-func RegisterRoutes(mux *http.ServeMux, h *Handler, accessTokenSecret string) {
-	// Middleware chain untuk route yang butuh Access Token.
+func RegisterRoutes(mux *http.ServeMux, h *Handler, accessTokenSecret, paymentTokenSecret string) {
+	// Middleware chain untuk route yang butuh Access Token (booking room).
 	withAccessToken := func(next http.HandlerFunc) http.Handler {
 		return middleware.Chain(
 			http.HandlerFunc(next),
 			middleware.RequireAccessToken(accessTokenSecret),
 		)
 	}
+	// Middleware chain untuk route yang butuh Payment Token.
+	withPaymentToken := func(next http.HandlerFunc) http.Handler {
+		return middleware.Chain(
+			http.HandlerFunc(next),
+			middleware.RequirePaymentToken(paymentTokenSecret),
+		)
+	}
 
 	mux.Handle("POST /api/booking/v1/create", withAccessToken(h.CreateBooking))
-	mux.Handle("GET /api/booking/v1/{bookingId}", withAccessToken(h.GetBooking))
+	// GET /{bookingId} dipanggil dari Payment Page — pakai Payment Token agar tetap valid
+	// setelah menit ke-5 saat Access Token sudah expired.
+	mux.Handle("GET /api/booking/v1/{bookingId}", withPaymentToken(h.GetBooking))
 	mux.Handle("GET /api/booking/v1/event/{eventId}/stock/stream", withAccessToken(h.StreamStock))
 }
 

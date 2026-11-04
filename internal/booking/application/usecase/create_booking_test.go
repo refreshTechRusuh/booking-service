@@ -269,12 +269,20 @@ type mockEventClient struct{}
 
 func (m *mockEventClient) MarkSoldOut(_ context.Context, _ string) error { return nil }
 
+// mockPaymentTokenSigner — no-op signer untuk test (selalu return token dummy)
+type mockPaymentTokenSigner struct{}
+
+func (m *mockPaymentTokenSigner) Sign(_, _ string, _ int64) (string, error) {
+	return "payment-token-dummy", nil
+}
+
 func newUC(bookingRepo *mockBookingRepo, stockRepo *mockStockRepo, prod *mockProducer) *usecase.BookingUsecase {
 	return usecase.NewBookingUsecase(
 		nil, // pool nil — sweeper tidak ditest di sini; CreateBooking tidak pakai pool langsung
 		bookingRepo, stockRepo,
 		&mockDukcapil{}, &mockCache{}, prod,
 		&mockEventClient{},
+		&mockPaymentTokenSigner{},
 		slog.Default(),
 	)
 }
