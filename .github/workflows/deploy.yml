@@ -19,12 +19,22 @@ permissions:
 
 jobs:
   build-and-deploy:
-    name: Build, Push & Deploy
+    name: Test, Build, Push & Deploy
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet & unit test
+        run: |
+          go vet ./...
+          go test ./...
 
       - name: Authenticate to Google Cloud (WIF)
         id: auth
@@ -60,13 +70,43 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           region: ${{ env.REGION }}
           image: ${{ env.IMAGE }}:${{ github.sha }}
+          env_vars: |
+            APP_ENV=${{ vars.APP_ENV }}
+            APP_PORT=${{ vars.APP_PORT }}
+            LOG_LEVEL=${{ vars.LOG_LEVEL }}
+            LOG_FORMAT=${{ vars.LOG_FORMAT }}
+            DB_HOST=${{ vars.DB_HOST }}
+            DB_PORT=${{ vars.DB_PORT }}
+            DB_USER=${{ vars.DB_USER }}
+            DB_NAME=${{ vars.DB_NAME }}
+            DB_SSL_MODE=${{ vars.DB_SSL_MODE }}
+            DB_MAX_OPEN_CONNS=${{ vars.DB_MAX_OPEN_CONNS }}
+            DB_MAX_IDLE_CONNS=${{ vars.DB_MAX_IDLE_CONNS }}
+            DB_CONN_TIMEOUT_SECONDS=${{ vars.DB_CONN_TIMEOUT_SECONDS }}
+            KAFKA_BROKERS=${{ vars.KAFKA_BROKERS }}
+            KAFKA_TLS=${{ vars.KAFKA_TLS }}
+            VALKEY_ADDR=${{ vars.VALKEY_ADDR }}
+            VALKEY_TLS=${{ vars.VALKEY_TLS }}
+            DUKCAPIL_BASE_URL=${{ vars.DUKCAPIL_BASE_URL }}
+            DUKCAPIL_TIMEOUT_MS=${{ vars.DUKCAPIL_TIMEOUT_MS }}
+            DUKCAPIL_FAIL_OPEN=${{ vars.DUKCAPIL_FAIL_OPEN }}
+            EVENT_SERVICE_URL=${{ vars.EVENT_SERVICE_URL }}
+            MIDTRANS_ENV=${{ vars.MIDTRANS_ENV }}
+            SSE_HEARTBEAT_SECONDS=${{ vars.SSE_HEARTBEAT_SECONDS }}
+          env_vars_update_strategy: overwrite
+          secrets: |
+            DB_PASSWORD=db-password:latest
+            ACCESS_TOKEN_SECRET=access-token-secret:latest
+            PAYMENT_TOKEN_SECRET=payment-token-secret:latest
+            VALKEY_PASSWORD=redis-password:latest
+            MIDTRANS_SERVER_KEY=midtrans-server-key:latest
+          secrets_update_strategy: overwrite
           flags: >-
             --allow-unauthenticated
             --port=${{ vars.APP_PORT }}
             --vpc-connector=${{ vars.VPC_CONNECTOR }}
             --vpc-egress=private-ranges-only
-            --set-env-vars=APP_ENV=${{ vars.APP_ENV }},APP_PORT=${{ vars.APP_PORT }},LOG_LEVEL=${{ vars.LOG_LEVEL }},LOG_FORMAT=${{ vars.LOG_FORMAT }},DB_HOST=${{ vars.DB_HOST }},DB_PORT=${{ vars.DB_PORT }},DB_USER=${{ vars.DB_USER }},DB_NAME=${{ vars.DB_NAME }},DB_SSL_MODE=${{ vars.DB_SSL_MODE }},DB_MAX_OPEN_CONNS=${{ vars.DB_MAX_OPEN_CONNS }},DB_MAX_IDLE_CONNS=${{ vars.DB_MAX_IDLE_CONNS }},DB_CONN_TIMEOUT_SECONDS=${{ vars.DB_CONN_TIMEOUT_SECONDS }},KAFKA_BROKERS=${{ vars.KAFKA_BROKERS }},KAFKA_TLS=${{ vars.KAFKA_TLS }},VALKEY_ADDR=${{ vars.VALKEY_ADDR }},VALKEY_TLS=${{ vars.VALKEY_TLS }},DUKCAPIL_BASE_URL=${{ vars.DUKCAPIL_BASE_URL }},DUKCAPIL_TIMEOUT_MS=${{ vars.DUKCAPIL_TIMEOUT_MS }},DUKCAPIL_FAIL_OPEN=${{ vars.DUKCAPIL_FAIL_OPEN }},EVENT_SERVICE_URL=${{ vars.EVENT_SERVICE_URL }},MIDTRANS_ENV=${{ vars.MIDTRANS_ENV }},SSE_HEARTBEAT_SECONDS=${{ vars.SSE_HEARTBEAT_SECONDS }}
-            --set-secrets=DB_PASSWORD=db-password:latest,ACCESS_TOKEN_SECRET=access-token-secret:latest,PAYMENT_TOKEN_SECRET=payment-token-secret:latest,VALKEY_PASSWORD=redis-password:latest,MIDTRANS_SERVER_KEY=midtrans-server-key:latest
+            --no-traffic
 
       - name: Route traffic to new revision
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
