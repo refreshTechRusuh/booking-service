@@ -30,7 +30,7 @@ func NewWiredHandlerWithUC(
 	stockRepo := bookingdb.NewStockRepository(pool, log)
 	dukcapilCl := newDukcapilClient(cfg.Dukcapil, log)
 	cacheRepo := cache.NewCacheRepository(valkeyClient, cfg.JWT.AccessTokenSecret, log)
-	eventProducer := event.NewKafkaProducer(producer, log)
+	eventProducer := event.NewKafkaProducer(producer)
 	paymentTokenSigner := token.NewPaymentTokenSigner(cfg.JWT.PaymentTokenSecret)
 
 	eventClient := NewEventServiceClient(cfg.EventSvc.BaseURL, log)
