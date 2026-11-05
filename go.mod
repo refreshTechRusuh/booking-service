@@ -45,6 +45,7 @@ require (
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/pashagolub/pgxmock/v3 v3.4.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
+	github.com/stretchr/objx v0.8.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0 // indirect
