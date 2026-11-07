@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v3"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
@@ -308,4 +309,170 @@ func TestBookingEntity_PointerTimeFields(t *testing.T) {
 	require.NotNil(t, b.BookingExpiresAt)
 	require.NotNil(t, b.PaymentExpiresAt)
 	assert.True(t, b.PaymentExpiresAt.After(*b.BookingExpiresAt))
+}
+
+// ── Additional ExpireBookingTx paths ─────────────────────────────────────────
+
+func TestBookingRepository_ExpireBookingTx_expireUpdateError(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE booking SET status").
+		WithArgs(pgxmock.AnyArg()).WillReturnError(errors.New("lock error"))
+	mock.ExpectRollback()
+
+	_, err := repo.ExpireBookingTx(context.Background(), "booking-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expire booking update")
+}
+
+func TestBookingRepository_ExpireBookingTx_releaseStockError(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE booking SET status").
+		WithArgs(pgxmock.AnyArg()).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ticket_category").
+		WithArgs(pgxmock.AnyArg()).WillReturnError(errors.New("stock error"))
+	mock.ExpectRollback()
+
+	_, err := repo.ExpireBookingTx(context.Background(), "booking-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expire booking release stock")
+}
+
+// ── HasActiveHeld dbError ─────────────────────────────────────────────────────
+
+func TestBookingRepository_HasActiveHeld_connError(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectQuery("SELECT COUNT").WithArgs("event-1").WillReturnError(errors.New("db error"))
+	_, err := repo.HasActiveHeld(context.Background(), "event-1")
+	require.Error(t, err)
+}
+
+// ── StockRepository additional errors ─────────────────────────────────────────
+
+func TestStockRepository_GetAvailableByEvent_connError(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewStockRepository(mock, discardLog())
+	mock.ExpectQuery("SELECT id").WithArgs("event-1").WillReturnError(errors.New("db error"))
+	_, err := repo.GetAvailableByEvent(context.Background(), "event-1")
+	require.Error(t, err)
+}
+
+// ── stubTx — minimal pgx.Tx impl for testing Tx-based methods ────────────────
+// pgxmock.Begin() tidak fully compatible dengan pgx.Tx type assertion di pgx v5.9+.
+// Kita buat stub sederhana yang satisfies pgx.Tx interface.
+
+type stubTx struct {
+	execResult pgconn.CommandTag
+	execErr    error
+	queryRow   pgx.Row
+}
+
+func newSuccessStubTx() *stubTx {
+	return &stubTx{execResult: pgconn.NewCommandTag("UPDATE 1")}
+}
+
+func newZeroRowsStubTx() *stubTx {
+	return &stubTx{execResult: pgconn.NewCommandTag("UPDATE 0")}
+}
+
+func newErrStubTx(err error) *stubTx { return &stubTx{execErr: err} }
+
+func (s *stubTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return s.execResult, s.execErr
+}
+func (s *stubTx) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
+	return nil, s.execErr
+}
+func (s *stubTx) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+	return noopRow{}
+}
+func (s *stubTx) Begin(_ context.Context) (pgx.Tx, error)  { return s, nil }
+func (s *stubTx) Commit(_ context.Context) error            { return nil }
+func (s *stubTx) Rollback(_ context.Context) error          { return nil }
+func (s *stubTx) CopyFrom(_ context.Context, _ pgx.Identifier, _ []string, _ pgx.CopyFromSource) (int64, error) {
+	return 0, nil
+}
+func (s *stubTx) SendBatch(_ context.Context, _ *pgx.Batch) pgx.BatchResults { return nil }
+func (s *stubTx) LargeObjects() pgx.LargeObjects                             { return pgx.LargeObjects{} }
+func (s *stubTx) Prepare(_ context.Context, _, _ string) (*pgconn.StatementDescription, error) {
+	return nil, nil
+}
+func (s *stubTx) Conn() *pgx.Conn { return nil }
+
+// noopRow — pgx.Row that scans nothing.
+type noopRow struct{}
+
+func (noopRow) Scan(...any) error { return nil }
+
+// ── Tests for Tx-based methods ────────────────────────────────────────────────
+
+func TestBookingRepository_Create_success(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+
+	// Only pool.Exec is called internally via asTx → use stubTx directly
+	tx := newSuccessStubTx()
+
+	now := time.Now().UTC()
+	nowPtr := &now
+	booking := entity.Booking{
+		ID: "b-1", UserID: "u-1", EventID: "e-1",
+		Email: "a@b.com", Status: entity.BookingStatusHeld,
+		BookingExpiresAt: nowPtr, PaymentExpiresAt: nowPtr, CreatedAt: now,
+	}
+	items := []entity.BookingItem{
+		{ID: "i-1", BookingID: "b-1", CategoryID: "c-1", NIK: "3273000000000001", PriceSnapshot: 100000},
+	}
+
+	err := repo.Create(context.Background(), tx, booking, items)
+	require.NoError(t, err)
+}
+
+func TestBookingRepository_UpdateStatus_success(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+
+	tx := newSuccessStubTx()
+	err := repo.UpdateStatus(context.Background(), tx, "booking-1", entity.BookingStatusPaid)
+	require.NoError(t, err)
+}
+
+func TestBookingRepository_UpdateStatus_error(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+
+	tx := newErrStubTx(errors.New("db error"))
+	err := repo.UpdateStatus(context.Background(), tx, "booking-1", entity.BookingStatusPaid)
+	require.Error(t, err)
+}
+
+func TestStockRepository_HoldStock_success_stubTx(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewStockRepository(mock, discardLog())
+
+	tx := newSuccessStubTx()
+	err := repo.HoldStock(context.Background(), tx, []entity.HoldItem{{CategoryID: "cat-1", Qty: 2}})
+	require.NoError(t, err)
+}
+
+func TestStockRepository_HoldStock_stockUnavailable_stubTx(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewStockRepository(mock, discardLog())
+
+	tx := newZeroRowsStubTx()
+	err := repo.HoldStock(context.Background(), tx, []entity.HoldItem{{CategoryID: "cat-1", Qty: 2}})
+	require.Error(t, err)
+}
+
+func TestStockRepository_ReleaseStock_success_stubTx(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewStockRepository(mock, discardLog())
+
+	tx := newSuccessStubTx()
+	err := repo.ReleaseStock(context.Background(), tx, "booking-1")
+	require.NoError(t, err)
 }
