@@ -20,8 +20,8 @@ func NewPool(ctx context.Context, cfg config.DBConfig) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("db: parse config: %w", err)
 	}
 
-	poolCfg.MaxConns = int32(cfg.MaxOpenConns)
-	poolCfg.MinConns = int32(cfg.MaxIdleConns)
+	poolCfg.MaxConns = int32(cfg.MaxOpenConns) // #nosec G115 -- pool size bounded in config (< 100)
+	poolCfg.MinConns = int32(cfg.MaxIdleConns) // #nosec G115 -- pool size bounded in config (< 100)
 	poolCfg.MaxConnLifetime = 1 * time.Hour
 	poolCfg.MaxConnIdleTime = 30 * time.Minute
 	poolCfg.HealthCheckPeriod = 1 * time.Minute

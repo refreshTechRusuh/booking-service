@@ -37,7 +37,7 @@ func New(
 
 	mux.HandleFunc("GET /sys/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"00000","message":"pong","data":{}}`))
+		w.Write([]byte(`{"status":"00000","message":"pong","data":{}}`)) // #nosec G104 -- health endpoint, write errors ignorable
 	})
 
 	// Wrap seluruh mux dengan request logger — catat semua inbound request.
@@ -45,7 +45,7 @@ func New(
 	traced := middleware.OtelMiddleware("booking-service")(logged)
 
 	closeFn := func() {
-		producer.Close()
+		producer.Close() // #nosec G104 -- shutdown, error irrelevant
 		pool.Close()
 		valkeyClient.Close()
 	}
