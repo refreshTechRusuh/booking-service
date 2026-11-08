@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
@@ -58,11 +57,11 @@ func dbLog(ctx context.Context, log *slog.Logger, op, sql string, start time.Tim
 // ---- BookingRepository ------------------------------------------------------
 
 type BookingRepository struct {
-	pool *pgxpool.Pool
+	pool IPool
 	log  *slog.Logger
 }
 
-func NewBookingRepository(pool *pgxpool.Pool, log *slog.Logger) *BookingRepository {
+func NewBookingRepository(pool IPool, log *slog.Logger) *BookingRepository {
 	return &BookingRepository{pool: pool, log: log}
 }
 
@@ -274,11 +273,11 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 }
 
 type StockRepository struct {
-	pool *pgxpool.Pool
+	pool IPool
 	log  *slog.Logger
 }
 
-func NewStockRepository(pool *pgxpool.Pool, log *slog.Logger) *StockRepository {
+func NewStockRepository(pool IPool, log *slog.Logger) *StockRepository {
 	return &StockRepository{pool: pool, log: log}
 }
 

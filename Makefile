@@ -24,8 +24,9 @@ mod-tidy:
 golint:
 	golangci-lint run --timeout 5m
 
-gosec:
-	gosec -exclude=G401,G304,G501,G505 -fmt=sonarqube -out=sonar-gosec.json ./...
+scan:
+	@echo "Running security scan"
+	gosec ./...
 
 # Mock generation — jalankan setelah mengubah interface di port/
 gen-mock-booking-inbound:

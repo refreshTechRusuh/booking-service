@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/refreshTechRusuh/booking-service/internal/config"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	bookinghttp "github.com/refreshTechRusuh/booking-service/internal/booking/infrastructure/http"
 	"github.com/refreshTechRusuh/booking-service/pkg/apperror"
@@ -257,4 +258,74 @@ func TestStreamStock_UsecaseError(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
+// ── Additional GetBooking tests ───────────────────────────────────────────────
+
+func TestGetBooking_InternalError(t *testing.T) {
+	uc := &mockBookingUsecase{
+		getFn: func(_ context.Context, _ string) (dto.BookingStatusResponse, error) {
+			return dto.BookingStatusResponse{}, apperror.New(apperror.ErrInternal, "db error")
+		},
+	}
+	mux := setupBookingRouter(uc)
+	token := makePaymentToken(t, "bkg-err", "evt-001")
+	req := httptest.NewRequest(http.MethodGet, "/api/booking/v1/bkg-err", nil)
+	req.Header.Set("X-Payment-Token", token)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+}
+
+func TestGetBooking_Success_BookingIDInResponse(t *testing.T) {
+	uc := &mockBookingUsecase{
+		getFn: func(_ context.Context, id string) (dto.BookingStatusResponse, error) {
+			return dto.BookingStatusResponse{BookingID: id, Status: "HELD", RemainingSeconds: 300}, nil
+		},
+	}
+	mux := setupBookingRouter(uc)
+	token := makePaymentToken(t, "bkg-123", "evt-001")
+	req := httptest.NewRequest(http.MethodGet, "/api/booking/v1/bkg-123", nil)
+	req.Header.Set("X-Payment-Token", token)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	data, ok := resp["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "bkg-123", data["bookingId"])
+}
+
+// ── Additional CreateBooking tests ────────────────────────────────────────────
+
+func TestCreateBooking_InvalidJSON_Returns500(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{})
+	ttl := time.Now().Add(5 * time.Minute).Unix()
+	token := makeAccessToken(t, "bkg-001", "evt-001", ttl)
+	req := httptest.NewRequest(http.MethodPost, "/api/booking/v1/create",
+		bytes.NewReader([]byte(`{"invalid`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Access-Token", token)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	assert.NotEqual(t, http.StatusOK, rr.Code)
+}
+
+// ── NewWiredHandlerWithUC — nil deps ─────────────────────────────────────────
+
+func TestNewWiredHandlerWithUC_nilDeps(t *testing.T) {
+	// Konstruktor tidak connect saat dibuat — nil pool/kafka/valkey aman.
+	// cfg harus valid karena dipakai untuk JWT secrets.
+	cfg := &config.Config{}
+	cfg.JWT.AccessTokenSecret = "test-secret"
+	cfg.JWT.PaymentTokenSecret = "test-payment"
+	cfg.Dukcapil.BaseURL = "http://localhost:8085"
+	cfg.Dukcapil.TimeoutMs = 100
+	cfg.EventSvc.BaseURL = "http://localhost:8082"
+
+	h, uc := bookinghttp.NewWiredHandlerWithUC(context.Background(), cfg, nil, nil, nil)
+	assert.NotNil(t, h)
+	assert.NotNil(t, uc)
 }

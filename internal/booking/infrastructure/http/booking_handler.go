@@ -127,7 +127,7 @@ func (h *Handler) StreamStock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Kirim connected comment agar klien tahu stream siap.
-	fmt.Fprintf(w, ": connected to stock stream for event %s\n\n", eventID)
+	fmt.Fprintf(w, ": connected to stock stream for event %s\n\n", eventID) // #nosec G705 -- SSE comment, not rendered as HTML
 	flusher.Flush()
 
 	ticker := time.NewTicker(30 * time.Second)
