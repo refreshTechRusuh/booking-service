@@ -43,6 +43,7 @@ func New(
 	// Wrap seluruh mux dengan request logger — catat semua inbound request.
 	logged := middleware.RequestLogger(slog.Default())(mux)
 	traced := middleware.OtelMiddleware("booking-service")(logged)
+	corsed := middleware.CORSMiddleware("*")(traced)
 
 	closeFn := func() {
 		producer.Close() // #nosec G104 -- shutdown, error irrelevant
@@ -50,5 +51,5 @@ func New(
 		valkeyClient.Close()
 	}
 
-	return &App{Handler: traced, Usecase: uc, Close: closeFn}, nil
+	return &App{Handler: corsed, Usecase: uc, Close: closeFn}, nil
 }
