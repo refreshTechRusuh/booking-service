@@ -111,6 +111,7 @@ jobs:
             --port=${{ vars.APP_PORT }}
             --vpc-connector=${{ vars.VPC_CONNECTOR }}
             --vpc-egress=private-ranges-only
+            --min-instances=1
             --no-traffic
 
       - name: Route traffic to new revision
