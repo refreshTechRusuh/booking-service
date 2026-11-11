@@ -161,8 +161,15 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 			return dto.CreateBookingResponse{}, apperror.Internal(err)
 		}
 
-		// Publish events setelah commit (best-effort, tidak rollback booking)
-		go u.publishPostBooking(context.WithoutCancel(ctx), booking, items, holdItems, totalAmount)
+		// Publish events setelah commit (best-effort, tidak rollback booking).
+		// Bangun nikToName dari req sebelum goroutine agar req tidak diakses concurrent.
+		nikToName := make(map[string]string, len(items))
+		for _, ri := range req.Items {
+			for _, a := range ri.Attendees {
+				nikToName[a.NIK] = a.Nama
+			}
+		}
+		go u.publishPostBooking(context.WithoutCancel(ctx), booking, items, holdItems, totalAmount, nikToName)
 
 		return dto.CreateBookingResponse{
 			BookingID:        bookingID,
@@ -316,14 +323,23 @@ func (u *BookingUsecase) publishPostBooking(
 	items []entity.BookingItem,
 	holdItems []entity.HoldItem,
 	total int64,
+	nikToName map[string]string,
 ) {
+	// Ambil nama event (best-effort, fallback ke kosong kalau gagal)
+	eventName, err := u.stockRepo.GetEventName(ctx, b.EventID)
+	if err != nil {
+		u.log.WarnContext(ctx, "get event name failed", slog.Any("err", err))
+	}
+
 	// 1. booking.created → Notification Worker (email #1 instruksi bayar)
 	itemEvents := make([]kafka.BookingItemEvent, 0, len(items))
 	for _, it := range items {
 		itemEvents = append(itemEvents, kafka.BookingItemEvent{
-			CategoryID: it.CategoryID,
-			NIK:        it.NIK,
-			Price:      it.PriceSnapshot,
+			CategoryID:   it.CategoryID,
+			CategoryName: "", // akan diisi dari nameMap setelah GetAvailableByEvent
+			NIK:          it.NIK,
+			Name:         nikToName[it.NIK],
+			Price:        it.PriceSnapshot,
 		})
 	}
 
@@ -336,6 +352,7 @@ func (u *BookingUsecase) publishPostBooking(
 	if err := u.producer.PublishBookingCreated(ctx, b.EventID, kafka.BookingCreatedEvent{
 		BookingID:        b.ID,
 		EventID:          b.EventID,
+		EventName:        eventName,
 		Email:            b.Email,
 		Items:            itemEvents,
 		TotalAmount:      total,
@@ -349,14 +366,17 @@ func (u *BookingUsecase) publishPostBooking(
 	stocks, err := u.stockRepo.GetAvailableByEvent(ctx, b.EventID)
 	if err != nil {
 		u.log.WarnContext(ctx, "get available after hold failed", slog.Any("err", err))
-		// Lanjutkan: Kafka tetap di-publish dengan Available=0 (lebih aman daripada -1),
-		// queue-service akan recalculate dari DB via WarmStock saat event berikutnya.
 	}
 	stockMap := make(map[string]int, len(stocks))
 	nameMap := make(map[string]string, len(stocks))
 	for _, s := range stocks {
 		stockMap[s.CategoryID] = s.Available
 		nameMap[s.CategoryID] = s.Name
+	}
+
+	// Isi CategoryName di itemEvents dari nameMap (tersedia setelah GetAvailableByEvent).
+	for i := range itemEvents {
+		itemEvents[i].CategoryName = nameMap[itemEvents[i].CategoryID]
 	}
 
 	// 3. stock.changed (reason=HOLD) → Queue Service update cache stok

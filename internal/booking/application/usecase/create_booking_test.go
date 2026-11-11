@@ -178,6 +178,11 @@ func (r *mockStockRepo) CountNIKBookings(_ context.Context, _ outbound.Tx, event
 	return r.nikBookings[key], nil
 }
 
+// GetEventName mock — kembalikan nama event dummy untuk test.
+func (r *mockStockRepo) GetEventName(_ context.Context, _ string) (string, error) {
+	return "Test Event", nil
+}
+
 func (r *mockStockRepo) incrementNIK(eventID, nik string, qty int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

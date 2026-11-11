@@ -107,6 +107,7 @@ const (
 type BookingCreatedEvent struct {
 	BookingID        string             `json:"bookingId"`
 	EventID          string             `json:"eventId"`
+	EventName        string             `json:"eventName"`        // nama event untuk email #1
 	Email            string             `json:"email"`
 	Items            []BookingItemEvent `json:"items"`
 	TotalAmount      int64              `json:"totalAmount"`
@@ -114,9 +115,11 @@ type BookingCreatedEvent struct {
 }
 
 type BookingItemEvent struct {
-	CategoryID string `json:"categoryId"`
-	NIK        string `json:"nik"`
-	Price      int64  `json:"price"`
+	CategoryID   string `json:"categoryId"`
+	CategoryName string `json:"categoryName"` // nama kategori untuk email #1
+	NIK          string `json:"nik"`
+	Name         string `json:"name"`         // nama penonton dari input (untuk email #1)
+	Price        int64  `json:"price"`
 }
 
 type StockChangedEvent struct {

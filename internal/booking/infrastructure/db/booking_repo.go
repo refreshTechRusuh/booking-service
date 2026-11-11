@@ -373,6 +373,23 @@ func (r *StockRepository) GetPriceMap(ctx context.Context, eventID string) (map[
 	return m, nil
 }
 
+// GetEventName mengembalikan nama event dari tabel event.
+// Dipakai untuk mengisi EventName di Kafka payload booking.created.
+func (r *StockRepository) GetEventName(ctx context.Context, eventID string) (string, error) {
+	start := time.Now()
+	const qEventName = `SELECT name FROM event WHERE id = $1`
+	var name string
+	err := r.pool.QueryRow(ctx, qEventName, eventID).Scan(&name)
+	if err != nil {
+		dbLog(ctx, r.log, "stock.get_event_name", qEventName, start, err, slog.String("eventId", eventID))
+		return "", fmt.Errorf("get event name: %w", err)
+	}
+	dbLog(ctx, r.log, "stock.get_event_name", qEventName, start, nil,
+		slog.String("eventId", eventID),
+		slog.String("name", name))
+	return name, nil
+}
+
 // CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik).
 //
 // Kuota per-NIK harus atomik: dua transaksi untuk NIK+event yang sama tidak boleh
