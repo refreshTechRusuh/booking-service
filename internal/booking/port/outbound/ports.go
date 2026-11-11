@@ -60,6 +60,9 @@ type IStockRepository interface {
 	// GetPriceMap mengembalikan map[categoryID]price untuk price_snapshot.
 	GetPriceMap(ctx context.Context, eventID string) (map[string]int64, error)
 
+	// GetEventName mengembalikan nama event untuk Kafka payload email.
+	GetEventName(ctx context.Context, eventID string) (string, error)
+
 	// CountNIKBookings menghitung tiket HELD/PAID per (eventID, nik) di bawah
 	// advisory xact lock per NIK, sehingga pengecekan kuota bersifat atomik.
 	CountNIKBookings(ctx context.Context, tx Tx, eventID, nik string) (int, error)

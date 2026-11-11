@@ -273,7 +273,7 @@ func (m *errPaymentTokenSigner) Sign(_, _ string, _ int64) (string, error) {
 
 // soldOutStockRepo: semua available=0
 type soldOutStockRepo struct {
-	*mockStockRepo
+	*mockStockRepo // embed mock supaya GetEventName dan GetPriceMap tersedia
 }
 
 func (r *soldOutStockRepo) GetAvailableByEvent(_ context.Context, _ string) ([]entity.CategoryStock, error) {

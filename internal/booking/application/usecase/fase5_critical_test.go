@@ -239,6 +239,10 @@ func (r *sweepableStockRepo) CountNIKBookings(_ context.Context, _ outbound.Tx, 
 	return 0, nil
 }
 
+func (r *sweepableStockRepo) GetEventName(_ context.Context, _ string) (string, error) {
+	return "Test Event", nil
+}
+
 // ============================================================
 // Fase 5 Test 1: TTL Booking Expired → Stok Dirilis + slot.released
 // ============================================================
