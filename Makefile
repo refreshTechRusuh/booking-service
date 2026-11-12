@@ -46,3 +46,6 @@ check-mocks:
 
 docker-build: build
 	docker build -f Dockerfile -t booking-service:latest .
+vuln:
+	@echo "Running vulnerability scan"
+	govulncheck ./...
