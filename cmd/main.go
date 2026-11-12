@@ -72,7 +72,7 @@ func main() {
 	// OptionalAuth di-chain agar userId tersedia di semua route non-protected.
 	handler := middleware.Chain(
 		app.Handler,
-		middleware.OptionalAuth(cfg.JWT.AccessTokenSecret),
+		middleware.OptionalAuth(cfg.JWT.UserJWTSecret),
 	)
 
 	srv := &http.Server{

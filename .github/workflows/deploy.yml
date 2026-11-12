@@ -103,6 +103,7 @@ jobs:
             DB_PASSWORD=db-password:latest
             ACCESS_TOKEN_SECRET=access-token-secret:latest
             PAYMENT_TOKEN_SECRET=payment-token-secret:latest
+            USER_JWT_SECRET=user-jwt-secret:latest
             VALKEY_PASSWORD=redis-password:latest
             MIDTRANS_SERVER_KEY=midtrans-server-key:latest
           secrets_update_strategy: overwrite
