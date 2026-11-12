@@ -236,9 +236,14 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	if _, err := tx.Exec(ctx, qExpireBooking, bookingID); err != nil {
+	tag, err := tx.Exec(ctx, qExpireBooking, bookingID)
+	if err != nil {
 		dbLog(ctx, r.log, "booking.expire_tx.update_booking", qExpireBooking, start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking update: %w", err)
+	}
+	// Booking sudah tidak HELD (keburu PAID/CANCELLED): jangan lepas stok (cegah double-release/oversell).
+	if tag.RowsAffected() == 0 {
+		return nil, outbound.ErrBookingNotHeld
 	}
 
 	if _, err := tx.Exec(ctx, qReleaseStock, bookingID); err != nil {

@@ -380,3 +380,12 @@ func TestCancelBooking_ShouldReturn409_WhenPaymentInProgress(t *testing.T) {
 	rec := doCancel(mux, "bkg-1", makePaymentToken(t, "bkg-1", "evt-1"))
 	assert.Equal(t, http.StatusConflict, rec.Code)
 }
+
+func TestGetBooking_ShouldReturn403_WhenTokenBelongsToOtherBooking(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{})
+	req := httptest.NewRequest(http.MethodGet, "/api/booking/v1/bkg-2", nil)
+	req.Header.Set("X-Payment-Token", makePaymentToken(t, "bkg-1", "evt-1"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}

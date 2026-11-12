@@ -8,6 +8,7 @@ import (
 
 	"github.com/refreshTechRusuh/booking-service/internal/booking/application/usecase"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
+	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
 	"github.com/refreshTechRusuh/booking-service/pkg/apperror"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -128,4 +129,27 @@ func TestCreateBooking_ShouldStoreQueueToken_ThenRejectAfterRevoked(t *testing.T
 	var appErr *apperror.AppError
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, apperror.ErrTokenExpired, appErr.Code, "token yang dicabut tidak boleh membuat booking lagi")
+}
+
+// notHeldRepo: ExpireBookingTx melaporkan booking sudah tidak HELD (mis. keburu PAID).
+type notHeldRepo struct{ *mockBookingRepo }
+
+func (r *notHeldRepo) ExpireBookingTx(_ context.Context, _ string) ([]entity.BookingItem, error) {
+	return nil, outbound.ErrBookingNotHeld
+}
+
+func TestSweepOnce_ShouldNotPublish_WhenBookingNoLongerHeld(t *testing.T) {
+	repo := newMockBookingRepo()
+	past := time.Now().Add(-5 * time.Minute)
+	repo.bookings["bkg-1"] = entity.Booking{ID: "bkg-1", EventID: "evt-1", Status: entity.BookingStatusHeld, PaymentExpiresAt: &past}
+	prod := newMockProducer()
+	stock := newMockStockRepo(map[string]int{"cat-1": 5}, map[string]int64{})
+	uc := usecase.NewBookingUsecase(nil, &notHeldRepo{repo}, stock, &mockDukcapil{}, &mockCache{}, prod,
+		&mockEventClient{}, &mockPaymentTokenSigner{}, slog.Default())
+
+	uc.SweepOnce(context.Background())
+
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, prod.count("slot.released"))
+	assert.Equal(t, 0, prod.count("stock.changed"))
 }

@@ -3,11 +3,16 @@ package outbound
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 )
+
+// ErrBookingNotHeld dikembalikan ExpireBookingTx bila booking sudah tidak HELD
+// (mis. keburu PAID/CANCELLED): tidak ada stok yang dilepas dan tidak ada event dipublish.
+var ErrBookingNotHeld = errors.New("booking is not HELD")
 
 // Tx adalah abstraksi transaksi DB.
 // Implementasinya adalah pgx.Tx di infra/db; di test bisa pakai mock.

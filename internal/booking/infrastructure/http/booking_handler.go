@@ -92,6 +92,12 @@ func (h *Handler) GetBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Payment Token harus milik booking ini (bukan booking orang lain).
+	if claims, ok := middleware.GetPaymentTokenClaims(r.Context()); !ok || claims.BookingID != bookingID {
+		apinizer.WriteError(w, apperror.New(apperror.ErrForbidden, "Payment Token tidak sesuai dengan booking"))
+		return
+	}
+
 	resp, err := h.usecase.GetBooking(r.Context(), bookingID)
 	if err != nil {
 		apinizer.WriteError(w, err)

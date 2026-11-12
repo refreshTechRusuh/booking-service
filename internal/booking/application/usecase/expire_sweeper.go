@@ -3,11 +3,13 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
+	"github.com/refreshTechRusuh/booking-service/internal/booking/port/outbound"
 	"github.com/refreshTechRusuh/booking-service/pkg/kafka"
 )
 
@@ -67,20 +69,24 @@ func (u *BookingUsecase) expireBooking(ctx context.Context, bookingID, eventID s
 	// ExpireBookingTx: BEGIN + UPDATE booking + ReleaseStock + COMMIT, dikelola di repo.
 	// Usecase tidak perlu pool.Begin langsung → fully testable tanpa DB.
 	items, err := u.bookingRepo.ExpireBookingTx(ctx, bookingID)
+	if errors.Is(err, outbound.ErrBookingNotHeld) {
+		u.log.InfoContext(ctx, "sweeper: booking no longer HELD, skip", slog.String("bookingId", bookingID))
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 
+	// queueToken (bila tersimpan) agar queue-service melepas kursi token itu lebih awal.
+	queueToken, tokErr := u.cache.GetBookingQueueToken(ctx, bookingID)
+	if tokErr != nil {
+		u.log.WarnContext(ctx, "get booking queue token failed", slog.String("bookingId", bookingID), slog.Any("err", tokErr))
+	}
+
 	// Publish events setelah commit (best-effort, tidak rollback expire)
-	go u.postExpirePublish(context.WithoutCancel(ctx), bookingID, eventID, items)
+	go u.postReleasePublish(context.WithoutCancel(ctx), bookingID, eventID, items, "BOOKING_TTL", queueToken)
 
 	return nil
-}
-
-// postExpirePublish mempublish semua side-effect setelah booking di-expire.
-// Berjalan sebagai goroutine terpisah agar tidak memblokir sweeper loop.
-func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, eventID string, items []entity.BookingItem) {
-	u.postReleasePublish(ctx, bookingID, eventID, items, "BOOKING_TTL", "")
 }
 
 // postReleasePublish mempublish semua side-effect setelah stok booking dilepas

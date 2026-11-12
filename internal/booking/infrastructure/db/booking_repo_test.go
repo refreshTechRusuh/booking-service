@@ -574,3 +574,16 @@ func TestBookingRepository_CancelBookingTx_notFound(t *testing.T) {
 	require.ErrorAs(t, err, &appErr)
 	assert.Equal(t, apperror.ErrNotFound, appErr.Code)
 }
+
+func TestBookingRepository_ExpireBookingTx_notHeld_doesNotReleaseStock(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE booking SET status").WithArgs("booking-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
+
+	_, err := repo.ExpireBookingTx(context.Background(), "booking-1")
+	require.ErrorIs(t, err, outbound.ErrBookingNotHeld)
+	require.NoError(t, mock.ExpectationsWereMet()) // tidak ada UPDATE ticket_category
+}
