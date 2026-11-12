@@ -248,3 +248,12 @@ func TestLoad_midtransProduction(t *testing.T) {
 	assert.Equal(t, "production", cfg.Midtrans.Env)
 	assert.Equal(t, "server-key-prod", cfg.Midtrans.ServerKey)
 }
+
+func TestLoad_ShouldReadUserJWTSecret_SeparateFromAccessTokenSecret(t *testing.T) {
+	setRequired(t)
+	t.Setenv("USER_JWT_SECRET", "user-secret-for-test")
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "user-secret-for-test", cfg.JWT.UserJWTSecret)
+	assert.NotEqual(t, cfg.JWT.AccessTokenSecret, cfg.JWT.UserJWTSecret)
+}

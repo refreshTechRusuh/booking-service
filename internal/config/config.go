@@ -63,6 +63,9 @@ type KafkaConfig struct {
 type JWTConfig struct {
 	AccessTokenSecret    string
 	PaymentTokenSecret   string
+	// UserJWTSecret memverifikasi token LOGIN dari user-service (header Authorization),
+	// terpisah dari AccessTokenSecret (token antrian queue-service).
+	UserJWTSecret string
 }
 
 type DukcapilConfig struct {
@@ -130,6 +133,7 @@ func Load() (*Config, error) {
 		JWT: JWTConfig{
 			AccessTokenSecret:  mustEnv("ACCESS_TOKEN_SECRET"),
 			PaymentTokenSecret: mustEnv("PAYMENT_TOKEN_SECRET"),
+			UserJWTSecret:      getEnv("USER_JWT_SECRET", defaultUserJWTSecret),
 		},
 		Dukcapil: DukcapilConfig{
 			BaseURL:   getEnv("DUKCAPIL_BASE_URL", "http://localhost:8085"),
@@ -155,8 +159,16 @@ func Load() (*Config, error) {
 		os.Exit(1)
 	}
 
+	if cfg.App.Env == "production" && cfg.JWT.UserJWTSecret == defaultUserJWTSecret {
+		slog.Error("USER_JWT_SECRET wajib di-set di production (sama dengan user-service)")
+		os.Exit(1)
+	}
 	return cfg, nil
 }
+
+// defaultUserJWTSecret hanya untuk dev lokal; sama dengan default user-service.
+const defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production"
+
 
 // SetupLogger mengkonfigurasi slog global berdasarkan config.
 func SetupLogger(cfg LogConfig) {
