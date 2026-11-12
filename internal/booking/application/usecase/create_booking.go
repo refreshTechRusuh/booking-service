@@ -68,6 +68,17 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 		return dto.CreateBookingResponse{}, apperror.TokenExpired()
 	}
 
+	// Queue token yang sudah dicabut (user cancel) tidak boleh dipakai booking lagi:
+	// user harus antri ulang. Gagal cek cache = lanjut (status di DB tetap otoritatif).
+	if req.QueueToken != "" {
+		revoked, err := u.cache.IsQueueTokenRevoked(ctx, req.QueueToken)
+		if err != nil {
+			u.log.WarnContext(ctx, "check revoked queue token failed", slog.Any("err", err))
+		} else if revoked {
+			return dto.CreateBookingResponse{}, apperror.TokenExpired()
+		}
+	}
+
 	// ── 4. Verifikasi Dukcapil per attendee SEBELUM buka transaksi (network call, tidak perlu tx)
 	for _, item := range req.Items {
 		for _, a := range item.Attendees {
@@ -90,7 +101,7 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 	}
 
 	// ── 6a-6b. Jalankan dalam satu transaksi pgx via repository
-	return u.bookingRepo.CreateBookingTx(ctx, req, func(ctx context.Context, tx outbound.Tx) (dto.CreateBookingResponse, error) {
+	resp, err := u.bookingRepo.CreateBookingTx(ctx, req, func(ctx context.Context, tx outbound.Tx) (dto.CreateBookingResponse, error) {
 		// 6a. Kuota per-NIK
 		for nik, qtyThisBooking := range req.NIKQtyMap() {
 			existing, err := u.stockRepo.CountNIKBookings(ctx, tx, req.EventID, nik)
@@ -179,6 +190,19 @@ func (u *BookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookin
 			PaymentToken:     paymentToken,
 		}, nil
 	})
+	if err != nil {
+		return dto.CreateBookingResponse{}, err
+	}
+
+	// Simpan queueToken (best-effort) agar CancelBooking bisa melepas kursi antrian
+	// walau Access Token (5 mnt) sudah kedaluwarsa saat user di halaman bayar.
+	if req.QueueToken != "" {
+		if storeErr := u.cache.StoreBookingQueueToken(ctx, resp.BookingID, req.QueueToken,
+			(paymentTTLMinutes+5)*time.Minute); storeErr != nil {
+			u.log.WarnContext(ctx, "store booking queue token failed", slog.Any("err", storeErr))
+		}
+	}
+	return resp, nil
 }
 
 // GetBooking mengembalikan status + sisa TTL + backDisabled.

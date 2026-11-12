@@ -80,9 +80,16 @@ func (u *BookingUsecase) expireBooking(ctx context.Context, bookingID, eventID s
 // postExpirePublish mempublish semua side-effect setelah booking di-expire.
 // Berjalan sebagai goroutine terpisah agar tidak memblokir sweeper loop.
 func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, eventID string, items []entity.BookingItem) {
+	u.postReleasePublish(ctx, bookingID, eventID, items, "BOOKING_TTL", "")
+}
+
+// postReleasePublish mempublish semua side-effect setelah stok booking dilepas
+// (expire oleh sweeper, atau cancel oleh user). queueToken opsional: bila diisi,
+// queue-service melepas kursi token itu lebih awal.
+func (u *BookingUsecase) postReleasePublish(ctx context.Context, bookingID, eventID string, items []entity.BookingItem, reason, queueToken string) {
 	// 1. Kafka: slot.released → Queue Service promosikan antrian berikutnya.
 	if err := u.producer.PublishSlotReleased(ctx, eventID, kafka.SlotReleasedEvent{
-		BookingID: bookingID, EventID: eventID, Reason: "BOOKING_TTL",
+		BookingID: bookingID, EventID: eventID, Reason: reason, QueueToken: queueToken,
 	}); err != nil {
 		u.log.ErrorContext(ctx, "publish slot.released failed", slog.Any("err", err))
 	}
@@ -167,7 +174,8 @@ func (u *BookingUsecase) postExpirePublish(ctx context.Context, bookingID, event
 		}
 	}
 
-	u.log.InfoContext(ctx, "booking expired processed",
+	u.log.InfoContext(ctx, "booking stock released processed",
+		slog.String("reason", reason),
 		slog.String("bookingId", bookingID),
 		slog.String("eventId", eventID),
 		slog.Int("items", len(items)))

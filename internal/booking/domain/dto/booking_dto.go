@@ -16,6 +16,7 @@ type CreateBookingRequest struct {
 	AccessToken         string
 	EventIDFromToken    string
 	BookingTTLExpiresAt int64
+	QueueToken          string // claim queueToken dari Access Token
 }
 
 // BookingItem adalah satu kategori + daftar penonton.
@@ -49,6 +50,12 @@ type BookingStatusResponse struct {
 	Status           string `json:"status"`
 	RemainingSeconds int    `json:"remainingSeconds"`
 	BackDisabled     bool   `json:"backDisabled"`
+}
+
+// CancelBookingResponse adalah response POST /bookings/{bookingId}/cancel.
+type CancelBookingResponse struct {
+	BookingID string `json:"bookingId"`
+	Status    string `json:"status"` // CANCELLED
 }
 
 // StockEvent adalah satu frame SSE dari GET /events/{eventId}/stock/stream.

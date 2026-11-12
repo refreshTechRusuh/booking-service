@@ -27,6 +27,7 @@ type mockBookingRepo struct {
 	mu       sync.Mutex
 	bookings map[string]entity.Booking
 	items    map[string][]entity.BookingItem // bookingId → items
+	payments map[string]bool                 // bookingId → ada payment PENDING/SUCCESS
 }
 
 func newMockBookingRepo() *mockBookingRepo {
@@ -114,6 +115,31 @@ func (r *mockBookingRepo) ExpireBookingTx(_ context.Context, bookingID string) (
 	return r.items[bookingID], nil
 }
 
+// CancelBookingTx meniru semantik repo asli: HELD → CANCELLED; PAID/EXPIRED/payment ditolak;
+// CANCELLED idempoten.
+func (r *mockBookingRepo) CancelBookingTx(_ context.Context, bookingID string) (entity.CancelResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	b, ok := r.bookings[bookingID]
+	if !ok {
+		return entity.CancelResult{}, apperror.NotFound("booking")
+	}
+	switch b.Status {
+	case entity.BookingStatusCancelled:
+		return entity.CancelResult{EventID: b.EventID, AlreadyCancelled: true}, nil
+	case entity.BookingStatusPaid:
+		return entity.CancelResult{}, apperror.BookingPaid()
+	case entity.BookingStatusExpired:
+		return entity.CancelResult{}, apperror.BookingExpired()
+	}
+	if r.payments[bookingID] {
+		return entity.CancelResult{}, apperror.PaymentInProgress()
+	}
+	b.Status = entity.BookingStatusCancelled
+	r.bookings[bookingID] = b
+	return entity.CancelResult{EventID: b.EventID, Items: r.items[bookingID]}, nil
+}
+
 // mockStockRepo — implements atomic stock with mutex (simulates DB behavior)
 type mockStockRepo struct {
 	mu          sync.Mutex
@@ -194,8 +220,44 @@ type mockDukcapil struct{}
 
 func (m *mockDukcapil) Verify(_ context.Context, _, _, _, _ string) (bool, error) { return true, nil }
 
-// mockCache
-type mockCache struct{}
+// mockCache — menyimpan queueToken per booking & token yang dicabut (lazy init, zero value aman).
+type mockCache struct {
+	mu      sync.Mutex
+	qt      map[string]string
+	revoked map[string]bool
+}
+
+func (m *mockCache) StoreBookingQueueToken(_ context.Context, bookingID, queueToken string, _ time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.qt == nil {
+		m.qt = map[string]string{}
+	}
+	m.qt[bookingID] = queueToken
+	return nil
+}
+
+func (m *mockCache) GetBookingQueueToken(_ context.Context, bookingID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.qt[bookingID], nil
+}
+
+func (m *mockCache) RevokeQueueToken(_ context.Context, queueToken string, _ time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.revoked == nil {
+		m.revoked = map[string]bool{}
+	}
+	m.revoked[queueToken] = true
+	return nil
+}
+
+func (m *mockCache) IsQueueTokenRevoked(_ context.Context, queueToken string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.revoked[queueToken], nil
+}
 
 func (m *mockCache) ValidateAccessToken(_ context.Context, _ string) (*outbound.AccessTokenClaims, error) {
 	return &outbound.AccessTokenClaims{EventID: "evt-1", BookingTTLExpiresAt: time.Now().Add(5 * time.Minute).Unix()}, nil
