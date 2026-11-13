@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read # golangci-lint-action (only-new-issues) membaca patch PR
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -39,11 +38,18 @@ jobs:
     name: Test & coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
+
+      - name: Download and verify Go modules
+        run: |
+          go mod download
+          go mod verify
 
       - name: Build & vet
         run: |
@@ -53,6 +59,13 @@ jobs:
       - name: Test (race + coverage)
         run: go test ./... -race -covermode=atomic -coverprofile=coverage.out -timeout 10m
 
+      - name: SonarQube Cloud analysis
+        # Enable only after Automatic Analysis is disabled in SonarQube Cloud.
+        if: ${{ vars.SONAR_CI_ENABLED == 'true' && vars.SONAR_AUTOMATIC_ANALYSIS_DISABLED == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
       - name: Coverage gate
         run: |
           head -1 coverage.out > coverage.filtered.out
@@ -61,7 +74,7 @@ jobs:
           echo "Coverage (tanpa konektor infra): ${total}% — minimum ${COVERAGE_MIN}%"
           awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { if (t+0 < m+0) { printf "::error::Coverage %.1f%% di bawah minimum %.1f%%\n", t, m; exit 1 } }'
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           name: coverage
@@ -71,16 +84,19 @@ jobs:
 
   lint:
     name: Lint
+    permissions:
+      contents: read
+      pull-requests: read # only-new-issues membaca patch PR
     # only-new-issues hanya berlaku di PR: utang lama tidak memblokir, masalah baru ditolak.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.15.0
           only-new-issues: true
@@ -89,8 +105,8 @@ jobs:
     name: Security (gosec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
@@ -103,8 +119,8 @@ jobs:
     name: Vulnerabilities (govulncheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: ${{ env.GO_VERSION }}
           check-latest: true
