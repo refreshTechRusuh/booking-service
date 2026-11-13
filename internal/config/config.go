@@ -167,7 +167,7 @@ func Load() (*Config, error) {
 }
 
 // defaultUserJWTSecret hanya untuk dev lokal; sama dengan default user-service.
-const defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production"
+const defaultUserJWTSecret = "dev-user-jwt-secret-change-in-production" // #nosec G101 -- default dev lokal; production ditolak saat Load()
 
 
 // SetupLogger mengkonfigurasi slog global berdasarkan config.
