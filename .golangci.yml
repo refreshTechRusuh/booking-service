@@ -40,9 +40,13 @@ linters:
       - legacy
       - std-error-handling
     rules:
-      - linters:
-          - errcheck
+      - linters: [errcheck]
         path: _test\.go$
+      # Exporter Cloud Trace sudah ditandai deprecated oleh Google (pengganti: OTLP).
+      # Migrasi dicatat sebagai pekerjaan lanjutan, bukan alasan CI merah.
+      - linters: [staticcheck]
+        path: pkg/otel/tracing\.go$
+        text: "SA1019"
 formatters:
   exclusions:
     generated: lax
