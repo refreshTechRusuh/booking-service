@@ -492,6 +492,8 @@ func TestBookingRepository_CancelBookingTx_success(t *testing.T) {
 	expectCancelLock(mock, "HELD")
 	mock.ExpectQuery("SELECT EXISTS").WithArgs("booking-1").
 		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("UPDATE payment SET status='EXPIRED'").WithArgs("booking-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec("UPDATE booking SET status='CANCELLED'").WithArgs("booking-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec("UPDATE ticket_category").WithArgs("booking-1").
@@ -505,6 +507,7 @@ func TestBookingRepository_CancelBookingTx_success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "evt-1", res.EventID)
 	assert.False(t, res.AlreadyCancelled)
+	assert.True(t, res.HadPendingPayment)
 	assert.Len(t, res.Items, 1)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -534,7 +537,7 @@ func TestBookingRepository_CancelBookingTx_rejectsWithoutTouchingStock(t *testin
 	}
 }
 
-func TestBookingRepository_CancelBookingTx_paymentInProgress(t *testing.T) {
+func TestBookingRepository_CancelBookingTx_paymentSuccess(t *testing.T) {
 	mock := newMock(t)
 	repo := db.NewBookingRepository(mock, discardLog())
 	expectCancelLock(mock, "HELD")
@@ -545,7 +548,7 @@ func TestBookingRepository_CancelBookingTx_paymentInProgress(t *testing.T) {
 	_, err := repo.CancelBookingTx(context.Background(), "booking-1")
 	var appErr *apperror.AppError
 	require.ErrorAs(t, err, &appErr)
-	assert.Equal(t, apperror.ErrPaymentInProgress, appErr.Code)
+	assert.Equal(t, apperror.ErrBookingPaid, appErr.Code)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

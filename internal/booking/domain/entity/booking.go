@@ -38,6 +38,9 @@ type CancelResult struct {
 	EventID          string
 	Items            []BookingItem // item yang stoknya dilepas
 	AlreadyCancelled bool          // true bila booking sudah CANCELLED sebelumnya (idempoten, tanpa efek)
+	// HadPendingPayment true bila booking sudah punya transaksi Midtrans PENDING
+	// (user sudah membuka Snap) — transaksinya perlu di-expire di Midtrans.
+	HadPendingPayment bool
 }
 
 // HoldItem adalah input untuk HoldStock.

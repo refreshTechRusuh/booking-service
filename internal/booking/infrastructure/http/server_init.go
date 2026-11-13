@@ -36,5 +36,10 @@ func NewWiredHandlerWithUC(
 	eventClient := NewEventServiceClient(cfg.EventSvc.BaseURL, log)
 
 	uc := usecase.NewBookingUsecase(pool, bookingRepo, stockRepo, dukcapilCl, cacheRepo, eventProducer, eventClient, paymentTokenSigner, log)
+	if cfg.Midtrans.ServerKey != "" {
+		uc.SetPaymentCanceller(NewMidtransClient(cfg.Midtrans.ServerKey, cfg.Midtrans.Env, log))
+	} else {
+		log.Warn("MIDTRANS_SERVER_KEY kosong: cancel tidak meng-expire transaksi Midtrans")
+	}
 	return NewHandler(uc), uc
 }

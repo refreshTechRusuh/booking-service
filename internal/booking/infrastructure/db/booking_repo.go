@@ -285,7 +285,8 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 func (r *BookingRepository) CancelBookingTx(ctx context.Context, bookingID string) (entity.CancelResult, error) {
 	start := time.Now()
 	const qLock = `SELECT event_id, status FROM booking WHERE id=$1 FOR UPDATE`
-	const qPayment = `SELECT EXISTS(SELECT 1 FROM payment WHERE booking_id=$1 AND status IN ('PENDING','SUCCESS'))`
+	const qPaid = `SELECT EXISTS(SELECT 1 FROM payment WHERE booking_id=$1 AND status='SUCCESS')`
+	const qExpirePayment = `UPDATE payment SET status='EXPIRED' WHERE booking_id=$1 AND status='PENDING'`
 	const qCancel = `UPDATE booking SET status='CANCELLED' WHERE id=$1 AND status='HELD'`
 	const qReleaseStock = `
 		UPDATE ticket_category tc
@@ -323,13 +324,22 @@ func (r *BookingRepository) CancelBookingTx(ctx context.Context, bookingID strin
 		return entity.CancelResult{}, apperror.BookingExpired()
 	}
 
-	var hasPayment bool
-	if err := tx.QueryRow(ctx, qPayment, bookingID).Scan(&hasPayment); err != nil {
-		dbLog(ctx, r.log, "booking.cancel_tx.check_payment", qPayment, start, err, slog.String("bookingId", bookingID))
+	// Sudah dibayar (callback SUCCESS masuk) walau status booking belum sempat PAID → tolak.
+	var paid bool
+	if err := tx.QueryRow(ctx, qPaid, bookingID).Scan(&paid); err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.check_payment", qPaid, start, err, slog.String("bookingId", bookingID))
 		return entity.CancelResult{}, fmt.Errorf("cancel booking check payment: %w", err)
 	}
-	if hasPayment {
-		return entity.CancelResult{}, apperror.PaymentInProgress()
+	if paid {
+		return entity.CancelResult{}, apperror.BookingPaid()
+	}
+
+	// Payment PENDING ikut di-expire agar sweeper payment-service tidak memprosesnya lagi
+	// (mencegah email "kedaluwarsa" & slot.released ganda).
+	payTag, err := tx.Exec(ctx, qExpirePayment, bookingID)
+	if err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.expire_payment", qExpirePayment, start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking expire payment: %w", err)
 	}
 
 	tag, err := tx.Exec(ctx, qCancel, bookingID)
@@ -370,7 +380,7 @@ func (r *BookingRepository) CancelBookingTx(ctx context.Context, bookingID strin
 	}
 	dbLog(ctx, r.log, "booking.cancel_tx", "TX cancel booking", start, nil,
 		slog.String("bookingId", bookingID), slog.Int("itemsReleased", len(items)))
-	return entity.CancelResult{EventID: eventID, Items: items}, nil
+	return entity.CancelResult{EventID: eventID, Items: items, HadPendingPayment: payTag.RowsAffected() > 0}, nil
 }
 
 type StockRepository struct {

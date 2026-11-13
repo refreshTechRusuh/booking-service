@@ -27,7 +27,7 @@ type mockBookingRepo struct {
 	mu       sync.Mutex
 	bookings map[string]entity.Booking
 	items    map[string][]entity.BookingItem // bookingId → items
-	payments map[string]bool                 // bookingId → ada payment PENDING/SUCCESS
+	payments map[string]string               // bookingId → status payment ("PENDING"/"SUCCESS")
 }
 
 func newMockBookingRepo() *mockBookingRepo {
@@ -132,12 +132,16 @@ func (r *mockBookingRepo) CancelBookingTx(_ context.Context, bookingID string) (
 	case entity.BookingStatusExpired:
 		return entity.CancelResult{}, apperror.BookingExpired()
 	}
-	if r.payments[bookingID] {
-		return entity.CancelResult{}, apperror.PaymentInProgress()
+	if r.payments[bookingID] == "SUCCESS" {
+		return entity.CancelResult{}, apperror.BookingPaid()
+	}
+	hadPending := r.payments[bookingID] == "PENDING"
+	if hadPending {
+		r.payments[bookingID] = "EXPIRED"
 	}
 	b.Status = entity.BookingStatusCancelled
 	r.bookings[bookingID] = b
-	return entity.CancelResult{EventID: b.EventID, Items: r.items[bookingID]}, nil
+	return entity.CancelResult{EventID: b.EventID, Items: r.items[bookingID], HadPendingPayment: hadPending}, nil
 }
 
 // mockStockRepo — implements atomic stock with mutex (simulates DB behavior)

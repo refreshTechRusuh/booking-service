@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -67,12 +68,12 @@ func TestCancelBooking_ShouldReject_WhenNotCancellable(t *testing.T) {
 	tests := []struct {
 		name    string
 		status  entity.BookingStatus
-		payment bool
+		payment string
 		code    apperror.ErrorCode
 	}{
-		{"paid", entity.BookingStatusPaid, false, apperror.ErrBookingPaid},
-		{"expired", entity.BookingStatusExpired, false, apperror.ErrBookingExpired},
-		{"payment in progress", entity.BookingStatusHeld, true, apperror.ErrPaymentInProgress},
+		{"paid", entity.BookingStatusPaid, "", apperror.ErrBookingPaid},
+		{"expired", entity.BookingStatusExpired, "", apperror.ErrBookingExpired},
+		{"payment success, booking belum PAID", entity.BookingStatusHeld, "SUCCESS", apperror.ErrBookingPaid},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,7 +82,7 @@ func TestCancelBooking_ShouldReject_WhenNotCancellable(t *testing.T) {
 			b := repo.bookings["bkg-1"]
 			b.Status = tt.status
 			repo.bookings["bkg-1"] = b
-			repo.payments = map[string]bool{"bkg-1": tt.payment}
+			repo.payments = map[string]string{"bkg-1": tt.payment}
 			prod := newMockProducer()
 			cache := &mockCache{}
 			_ = cache.StoreBookingQueueToken(context.Background(), "bkg-1", "q_token", time.Minute)
@@ -152,4 +153,56 @@ func TestSweepOnce_ShouldNotPublish_WhenBookingNoLongerHeld(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, 0, prod.count("slot.released"))
 	assert.Equal(t, 0, prod.count("stock.changed"))
+}
+
+// fakeCanceller mencatat order yang di-expire di gateway.
+type fakeCanceller struct {
+	mu     sync.Mutex
+	orders []string
+}
+
+func (f *fakeCanceller) ExpireTransaction(_ context.Context, orderID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.orders = append(f.orders, orderID)
+	return nil
+}
+
+func (f *fakeCanceller) calls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.orders...)
+}
+
+func TestCancelBooking_ShouldCancelAndExpireMidtrans_WhenPaymentPending(t *testing.T) {
+	repo := newMockBookingRepo()
+	heldBooking(repo, "bkg-1")
+	repo.payments = map[string]string{"bkg-1": "PENDING"}
+	prod := newMockProducer()
+	uc := newCancelUC(repo, &mockCache{}, prod)
+	canceller := &fakeCanceller{}
+	uc.SetPaymentCanceller(canceller)
+
+	resp, err := uc.CancelBooking(context.Background(), "bkg-1")
+
+	require.NoError(t, err)
+	assert.Equal(t, "CANCELLED", resp.Status)
+	assert.Equal(t, "EXPIRED", repo.payments["bkg-1"], "payment PENDING harus ikut di-expire")
+	assert.Eventually(t, func() bool { return len(canceller.calls()) == 1 }, time.Second, 10*time.Millisecond)
+	assert.Equal(t, []string{"bkg-1"}, canceller.calls())
+	assert.Eventually(t, func() bool { return prod.count("slot.released") == 1 }, time.Second, 10*time.Millisecond)
+}
+
+func TestCancelBooking_ShouldNotCallMidtrans_WhenNoPendingPayment(t *testing.T) {
+	repo := newMockBookingRepo()
+	heldBooking(repo, "bkg-1")
+	uc := newCancelUC(repo, &mockCache{}, newMockProducer())
+	canceller := &fakeCanceller{}
+	uc.SetPaymentCanceller(canceller)
+
+	_, err := uc.CancelBooking(context.Background(), "bkg-1")
+
+	require.NoError(t, err)
+	time.Sleep(50 * time.Millisecond)
+	assert.Empty(t, canceller.calls())
 }

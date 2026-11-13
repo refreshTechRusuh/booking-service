@@ -35,6 +35,13 @@ type BookingUsecase struct {
 	eventClient  outbound.IEventServiceClient
 	paymentToken outbound.IPaymentTokenSigner
 	log          *slog.Logger
+	// paymentCanceller opsional (nil = lewati): expire transaksi Midtrans saat cancel.
+	paymentCanceller outbound.IPaymentTransactionCanceller
+}
+
+// SetPaymentCanceller memasang adapter untuk meng-expire transaksi Midtrans saat cancel.
+func (u *BookingUsecase) SetPaymentCanceller(c outbound.IPaymentTransactionCanceller) {
+	u.paymentCanceller = c
 }
 
 func NewBookingUsecase(

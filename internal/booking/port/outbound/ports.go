@@ -51,9 +51,9 @@ type IBookingRepository interface {
 	ExpireBookingTx(ctx context.Context, bookingID string) ([]entity.BookingItem, error)
 
 	// CancelBookingTx membatalkan booking HELD milik user: lock baris booking (FOR UPDATE),
-	// tolak bila PAID (BookingPaid), EXPIRED (BookingExpired) atau sudah ada payment
-	// PENDING/SUCCESS (PaymentInProgress), lalu UPDATE status=CANCELLED + ReleaseStock
-	// dalam satu transaksi. Sudah CANCELLED → AlreadyCancelled=true tanpa efek (idempoten).
+	// tolak bila PAID / payment SUCCESS (BookingPaid) atau EXPIRED (BookingExpired), lalu
+	// dalam satu transaksi: UPDATE booking=CANCELLED, payment PENDING → EXPIRED, ReleaseStock.
+	// Sudah CANCELLED → AlreadyCancelled=true tanpa efek (idempoten).
 	CancelBookingTx(ctx context.Context, bookingID string) (entity.CancelResult, error)
 }
 
@@ -107,6 +107,14 @@ type IEventServiceClient interface {
 	// MarkSoldOut memanggil POST /internal/events/{eventId}/sold-out ke event-service.
 	// Idempoten: event-service mengabaikan bila sudah sold-out.
 	MarkSoldOut(ctx context.Context, eventID string) error
+}
+
+// IPaymentTransactionCanceller mematikan transaksi di payment gateway (Midtrans) supaya
+// VA/QRIS yang sudah terbit tidak bisa dibayar lagi setelah booking dibatalkan.
+type IPaymentTransactionCanceller interface {
+	// ExpireTransaction meng-expire transaksi orderID (= bookingId). Transaksi yang belum
+	// pernah dibuat di gateway (user belum memilih metode) bukan error.
+	ExpireTransaction(ctx context.Context, orderID string) error
 }
 
 // IPaymentTokenSigner menerbitkan Payment Token JWT yang dipakai payment-service.
