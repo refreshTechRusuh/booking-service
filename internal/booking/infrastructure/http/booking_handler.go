@@ -11,6 +11,7 @@ import (
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/port/inbound"
 	"github.com/refreshTechRusuh/booking-service/pkg/apinizer"
+	"github.com/refreshTechRusuh/booking-service/pkg/apperror"
 	"github.com/refreshTechRusuh/booking-service/pkg/middleware"
 )
 
@@ -47,6 +48,8 @@ func RegisterRoutes(mux *http.ServeMux, h *Handler, accessTokenSecret, paymentTo
 	// GET /{bookingId} dipanggil dari Payment Page — pakai Payment Token agar tetap valid
 	// setelah menit ke-5 saat Access Token sudah expired.
 	mux.Handle("GET /api/booking/v1/{bookingId}", withPaymentToken(h.GetBooking))
+	// POST /{bookingId}/cancel — user keluar total; Payment Token dengan bookingId yang cocok.
+	mux.Handle("POST /api/booking/v1/{bookingId}/cancel", withPaymentToken(h.CancelBooking))
 	mux.Handle("GET /api/booking/v1/event/{eventId}/stock/stream", withAccessToken(h.StreamStock))
 }
 
@@ -66,6 +69,7 @@ func (h *Handler) CreateBooking(w http.ResponseWriter, r *http.Request) {
 	if claims, ok := middleware.GetAccessTokenClaims(r.Context()); ok {
 		req.EventIDFromToken = claims.EventID
 		req.BookingTTLExpiresAt = claims.BookingTTLExpiresAt
+		req.QueueToken = claims.QueueToken
 	}
 	if userID, ok := middleware.GetUserID(r.Context()); ok {
 		req.UserID = userID
@@ -88,6 +92,12 @@ func (h *Handler) GetBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Payment Token harus milik booking ini (bukan booking orang lain).
+	if claims, ok := middleware.GetPaymentTokenClaims(r.Context()); !ok || claims.BookingID != bookingID {
+		apinizer.WriteError(w, apperror.New(apperror.ErrForbidden, "Payment Token tidak sesuai dengan booking"))
+		return
+	}
+
 	resp, err := h.usecase.GetBooking(r.Context(), bookingID)
 	if err != nil {
 		apinizer.WriteError(w, err)
@@ -95,6 +105,28 @@ func (h *Handler) GetBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	apinizer.Success(w, "OK", resp)
+}
+
+// CancelBooking handles POST /api/booking/v1/{bookingId}/cancel
+func (h *Handler) CancelBooking(w http.ResponseWriter, r *http.Request) {
+	bookingID := r.PathValue("bookingId")
+	if bookingID == "" {
+		apinizer.WriteError(w, apperror.Validation("bookingId required"))
+		return
+	}
+	// Payment Token harus milik booking ini (bukan booking orang lain).
+	claims, ok := middleware.GetPaymentTokenClaims(r.Context())
+	if !ok || claims.BookingID != bookingID {
+		apinizer.WriteError(w, apperror.New(apperror.ErrForbidden, "Payment Token tidak sesuai dengan booking"))
+		return
+	}
+
+	resp, err := h.usecase.CancelBooking(r.Context(), bookingID)
+	if err != nil {
+		apinizer.WriteError(w, err)
+		return
+	}
+	apinizer.Success(w, "Booking dibatalkan", resp)
 }
 
 // StreamStock handles GET /api/booking/v1/event/{eventId}/stock/stream (SSE)

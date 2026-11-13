@@ -65,7 +65,7 @@ func mapErrorCode(code apperror.ErrorCode, msg string) (int, string) {
 	case apperror.ErrNotFound:
 		return http.StatusNotFound, msg
 	case apperror.ErrStockUnavailable, apperror.ErrQuotaExceeded, apperror.ErrQueueDuplicate,
-		apperror.ErrMethodTimeInsufficient:
+		apperror.ErrMethodTimeInsufficient, apperror.ErrBookingPaid, apperror.ErrPaymentInProgress:
 		return http.StatusConflict, msg
 	case apperror.ErrTokenExpired, apperror.ErrBookingExpired, apperror.ErrSoldOut:
 		return http.StatusGone, msg

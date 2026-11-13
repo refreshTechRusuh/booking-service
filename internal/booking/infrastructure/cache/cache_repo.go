@@ -83,6 +83,50 @@ func (r *CacheRepository) PublishStockChanged(ctx context.Context, eventID strin
 	return err
 }
 
+func keyBookingQueueToken(bookingID string) string { return "booking:qt:" + bookingID }
+func keyRevokedQueueToken(queueToken string) string { return "queue:revoked:" + queueToken }
+
+// StoreBookingQueueToken menyimpan queueToken milik booking dengan TTL.
+func (r *CacheRepository) StoreBookingQueueToken(ctx context.Context, bookingID, queueToken string, ttl time.Duration) error {
+	cmd := r.client.B().Set().Key(keyBookingQueueToken(bookingID)).Value(queueToken).
+		ExSeconds(int64(ttl.Seconds())).Build()
+	if err := r.client.Do(ctx, cmd).Error(); err != nil {
+		return fmt.Errorf("cache: store booking queue token: %w", err)
+	}
+	return nil
+}
+
+// GetBookingQueueToken mengembalikan queueToken booking, "" bila tidak ada.
+func (r *CacheRepository) GetBookingQueueToken(ctx context.Context, bookingID string) (string, error) {
+	v, err := r.client.Do(ctx, r.client.B().Get().Key(keyBookingQueueToken(bookingID)).Build()).ToString()
+	if err != nil {
+		if vk.IsValkeyNil(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("cache: get booking queue token: %w", err)
+	}
+	return v, nil
+}
+
+// RevokeQueueToken menandai queueToken tidak boleh dipakai membuat booking lagi.
+func (r *CacheRepository) RevokeQueueToken(ctx context.Context, queueToken string, ttl time.Duration) error {
+	cmd := r.client.B().Set().Key(keyRevokedQueueToken(queueToken)).Value("1").
+		ExSeconds(int64(ttl.Seconds())).Build()
+	if err := r.client.Do(ctx, cmd).Error(); err != nil {
+		return fmt.Errorf("cache: revoke queue token: %w", err)
+	}
+	return nil
+}
+
+// IsQueueTokenRevoked true bila queueToken sudah dicabut.
+func (r *CacheRepository) IsQueueTokenRevoked(ctx context.Context, queueToken string) (bool, error) {
+	n, err := r.client.Do(ctx, r.client.B().Exists().Key(keyRevokedQueueToken(queueToken)).Build()).AsInt64()
+	if err != nil {
+		return false, fmt.Errorf("cache: check revoked queue token: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SubscribeStockChanged subscribe ke channel Redis Pub/Sub untuk SSE stok.
 func (r *CacheRepository) SubscribeStockChanged(ctx context.Context, eventID string) (<-chan []byte, func(), error) {
 	channel := fmt.Sprintf("stock:%s", eventID)

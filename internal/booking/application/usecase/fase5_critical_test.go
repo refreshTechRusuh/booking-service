@@ -42,6 +42,18 @@ func (c *trackingCache) ValidateAccessToken(_ context.Context, _ string) (*outbo
 	return &outbound.AccessTokenClaims{EventID: "evt-1", BookingTTLExpiresAt: time.Now().Add(5 * time.Minute).Unix()}, nil
 }
 
+func (c *trackingCache) StoreBookingQueueToken(_ context.Context, _, _ string, _ time.Duration) error {
+	return nil
+}
+func (c *trackingCache) GetBookingQueueToken(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (c *trackingCache) RevokeQueueToken(_ context.Context, _ string, _ time.Duration) error {
+	return nil
+}
+func (c *trackingCache) IsQueueTokenRevoked(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
 func (c *trackingCache) PublishStockChanged(_ context.Context, eventID string, payload []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -175,6 +187,11 @@ func (r *sweepableBookingRepo) ExpireBookingTx(_ context.Context, bookingID stri
 	r.bookings[bookingID] = b
 	r.expireCalledFor = append(r.expireCalledFor, bookingID)
 	return r.items[bookingID], nil
+}
+
+// CancelBookingTx tidak dipakai di test sweeper; cukup memenuhi interface.
+func (r *sweepableBookingRepo) CancelBookingTx(_ context.Context, bookingID string) (entity.CancelResult, error) {
+	return entity.CancelResult{}, fmt.Errorf("not implemented: %s", bookingID)
 }
 
 // sweepableStockRepo — tracks ReleaseStock calls.

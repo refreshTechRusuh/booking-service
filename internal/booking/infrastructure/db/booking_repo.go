@@ -236,9 +236,14 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	if _, err := tx.Exec(ctx, qExpireBooking, bookingID); err != nil {
+	tag, err := tx.Exec(ctx, qExpireBooking, bookingID)
+	if err != nil {
 		dbLog(ctx, r.log, "booking.expire_tx.update_booking", qExpireBooking, start, err, slog.String("bookingId", bookingID))
 		return nil, fmt.Errorf("expire booking update: %w", err)
+	}
+	// Booking sudah tidak HELD (keburu PAID/CANCELLED): jangan lepas stok (cegah double-release/oversell).
+	if tag.RowsAffected() == 0 {
+		return nil, outbound.ErrBookingNotHeld
 	}
 
 	if _, err := tx.Exec(ctx, qReleaseStock, bookingID); err != nil {
@@ -270,6 +275,102 @@ func (r *BookingRepository) ExpireBookingTx(ctx context.Context, bookingID strin
 		slog.String("bookingId", bookingID),
 		slog.Int("itemsReleased", len(items)))
 	return items, nil
+}
+
+// CancelBookingTx membatalkan booking HELD secara atomik.
+//
+// Baris booking dikunci (FOR UPDATE) sehingga callback pembayaran / sweeper tidak bisa
+// mengubah status bersamaan. Stok hanya dilepas bila UPDATE benar-benar mengenai 1 baris
+// (HELD → CANCELLED), jadi tidak ada double-release.
+func (r *BookingRepository) CancelBookingTx(ctx context.Context, bookingID string) (entity.CancelResult, error) {
+	start := time.Now()
+	const qLock = `SELECT event_id, status FROM booking WHERE id=$1 FOR UPDATE`
+	const qPayment = `SELECT EXISTS(SELECT 1 FROM payment WHERE booking_id=$1 AND status IN ('PENDING','SUCCESS'))`
+	const qCancel = `UPDATE booking SET status='CANCELLED' WHERE id=$1 AND status='HELD'`
+	const qReleaseStock = `
+		UPDATE ticket_category tc
+		   SET available = available + sub.qty
+		FROM (
+			SELECT category_id, COUNT(*) AS qty
+			FROM booking_item WHERE booking_id = $1
+			GROUP BY category_id
+		) sub
+		WHERE tc.id = sub.category_id`
+	const qItems = `SELECT id, booking_id, category_id, nik, price_snapshot FROM booking_item WHERE booking_id=$1`
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.begin", "BEGIN", start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking tx begin: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var eventID, status string
+	if err := tx.QueryRow(ctx, qLock, bookingID).Scan(&eventID, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return entity.CancelResult{}, apperror.NotFound("booking")
+		}
+		dbLog(ctx, r.log, "booking.cancel_tx.lock", qLock, start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking lock: %w", err)
+	}
+
+	switch entity.BookingStatus(status) {
+	case entity.BookingStatusCancelled:
+		return entity.CancelResult{EventID: eventID, AlreadyCancelled: true}, nil
+	case entity.BookingStatusPaid:
+		return entity.CancelResult{}, apperror.BookingPaid()
+	case entity.BookingStatusExpired:
+		return entity.CancelResult{}, apperror.BookingExpired()
+	}
+
+	var hasPayment bool
+	if err := tx.QueryRow(ctx, qPayment, bookingID).Scan(&hasPayment); err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.check_payment", qPayment, start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking check payment: %w", err)
+	}
+	if hasPayment {
+		return entity.CancelResult{}, apperror.PaymentInProgress()
+	}
+
+	tag, err := tx.Exec(ctx, qCancel, bookingID)
+	if err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.update", qCancel, start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking update: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return entity.CancelResult{}, fmt.Errorf("cancel booking: expected 1 row, got %d", tag.RowsAffected())
+	}
+
+	if _, err := tx.Exec(ctx, qReleaseStock, bookingID); err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.release_stock", qReleaseStock, start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking release stock: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, qItems, bookingID)
+	if err != nil {
+		return entity.CancelResult{}, fmt.Errorf("cancel booking list items: %w", err)
+	}
+	defer rows.Close()
+	var items []entity.BookingItem
+	for rows.Next() {
+		var it entity.BookingItem
+		if err := rows.Scan(&it.ID, &it.BookingID, &it.CategoryID, &it.NIK, &it.PriceSnapshot); err != nil {
+			return entity.CancelResult{}, err
+		}
+		items = append(items, it)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return entity.CancelResult{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		dbLog(ctx, r.log, "booking.cancel_tx.commit", "COMMIT", start, err, slog.String("bookingId", bookingID))
+		return entity.CancelResult{}, fmt.Errorf("cancel booking commit: %w", err)
+	}
+	dbLog(ctx, r.log, "booking.cancel_tx", "TX cancel booking", start, nil,
+		slog.String("bookingId", bookingID), slog.Int("itemsReleased", len(items)))
+	return entity.CancelResult{EventID: eventID, Items: items}, nil
 }
 
 type StockRepository struct {

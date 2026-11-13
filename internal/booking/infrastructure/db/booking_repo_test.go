@@ -476,3 +476,114 @@ func TestStockRepository_ReleaseStock_success_stubTx(t *testing.T) {
 	err := repo.ReleaseStock(context.Background(), tx, "booking-1")
 	require.NoError(t, err)
 }
+
+// ── CancelBookingTx ───────────────────────────────────────────────────────────
+
+func expectCancelLock(mock pgxmock.PgxPoolIface, status string) {
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id, status FROM booking").WithArgs("booking-1").
+		WillReturnRows(pgxmock.NewRows([]string{"event_id", "status"}).AddRow("evt-1", status))
+}
+
+func TestBookingRepository_CancelBookingTx_success(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+
+	expectCancelLock(mock, "HELD")
+	mock.ExpectQuery("SELECT EXISTS").WithArgs("booking-1").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec("UPDATE booking SET status='CANCELLED'").WithArgs("booking-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec("UPDATE ticket_category").WithArgs("booking-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectQuery("SELECT id, booking_id").WithArgs("booking-1").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "booking_id", "category_id", "nik", "price_snapshot"}).
+			AddRow("item-1", "booking-1", "cat-1", "3273000000000001", int64(100000)))
+	mock.ExpectCommit()
+
+	res, err := repo.CancelBookingTx(context.Background(), "booking-1")
+	require.NoError(t, err)
+	assert.Equal(t, "evt-1", res.EventID)
+	assert.False(t, res.AlreadyCancelled)
+	assert.Len(t, res.Items, 1)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBookingRepository_CancelBookingTx_rejectsWithoutTouchingStock(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		code   apperror.ErrorCode
+	}{
+		{"paid", "PAID", apperror.ErrBookingPaid},
+		{"expired", "EXPIRED", apperror.ErrBookingExpired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMock(t)
+			repo := db.NewBookingRepository(mock, discardLog())
+			expectCancelLock(mock, tt.status)
+			mock.ExpectRollback()
+
+			_, err := repo.CancelBookingTx(context.Background(), "booking-1")
+			var appErr *apperror.AppError
+			require.ErrorAs(t, err, &appErr)
+			assert.Equal(t, tt.code, appErr.Code)
+			require.NoError(t, mock.ExpectationsWereMet()) // tidak ada UPDATE stok
+		})
+	}
+}
+
+func TestBookingRepository_CancelBookingTx_paymentInProgress(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	expectCancelLock(mock, "HELD")
+	mock.ExpectQuery("SELECT EXISTS").WithArgs("booking-1").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectRollback()
+
+	_, err := repo.CancelBookingTx(context.Background(), "booking-1")
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, apperror.ErrPaymentInProgress, appErr.Code)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBookingRepository_CancelBookingTx_alreadyCancelledIsIdempotent(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	expectCancelLock(mock, "CANCELLED")
+	mock.ExpectRollback()
+
+	res, err := repo.CancelBookingTx(context.Background(), "booking-1")
+	require.NoError(t, err)
+	assert.True(t, res.AlreadyCancelled)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestBookingRepository_CancelBookingTx_notFound(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT event_id, status FROM booking").WithArgs("booking-1").
+		WillReturnError(pgx.ErrNoRows)
+	mock.ExpectRollback()
+
+	_, err := repo.CancelBookingTx(context.Background(), "booking-1")
+	var appErr *apperror.AppError
+	require.ErrorAs(t, err, &appErr)
+	assert.Equal(t, apperror.ErrNotFound, appErr.Code)
+}
+
+func TestBookingRepository_ExpireBookingTx_notHeld_doesNotReleaseStock(t *testing.T) {
+	mock := newMock(t)
+	repo := db.NewBookingRepository(mock, discardLog())
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE booking SET status").WithArgs("booking-1").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
+
+	_, err := repo.ExpireBookingTx(context.Background(), "booking-1")
+	require.ErrorIs(t, err, outbound.ErrBookingNotHeld)
+	require.NoError(t, mock.ExpectationsWereMet()) // tidak ada UPDATE ticket_category
+}

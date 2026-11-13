@@ -26,6 +26,8 @@ const (
 	// 409
 	ErrStockUnavailable ErrorCode = "STOCK_UNAVAILABLE"
 	ErrQueueDuplicate   ErrorCode = "QUEUE_DUPLICATE"
+	ErrBookingPaid      ErrorCode = "BOOKING_ALREADY_PAID"
+	ErrPaymentInProgress ErrorCode = "PAYMENT_IN_PROGRESS"
 
 	// 410
 	ErrTokenExpired     ErrorCode = "TOKEN_EXPIRED"
@@ -75,6 +77,8 @@ func QuotaExceeded() *AppError               { return New(ErrQuotaExceeded, "1 N
 func StockUnavailable() *AppError            { return New(ErrStockUnavailable, "Stok tidak mencukupi") }
 func TokenInvalid() *AppError                { return New(ErrTokenInvalid, "Access Token tidak valid") }
 func TokenExpired() *AppError                { return New(ErrTokenExpired, "Waktu booking telah habis, silakan mulai ulang") }
+func BookingPaid() *AppError                 { return New(ErrBookingPaid, "Booking sudah dibayar dan tidak dapat dibatalkan") }
+func PaymentInProgress() *AppError           { return New(ErrPaymentInProgress, "Pembayaran sedang berlangsung, selesaikan atau tunggu waktu habis") }
 func BookingExpired() *AppError              { return New(ErrBookingExpired, "Waktu pembayaran telah habis") }
 func SoldOut() *AppError                     { return New(ErrSoldOut, "Tiket sudah habis terjual") }
 func MethodTimeInsufficient() *AppError      { return New(ErrMethodTimeInsufficient, "Sisa waktu tidak cukup untuk metode ini") }

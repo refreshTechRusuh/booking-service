@@ -33,6 +33,13 @@ type BookingItem struct {
 	PriceSnapshot int64  // harga saat booking (immutable)
 }
 
+// CancelResult adalah hasil CancelBookingTx.
+type CancelResult struct {
+	EventID          string
+	Items            []BookingItem // item yang stoknya dilepas
+	AlreadyCancelled bool          // true bila booking sudah CANCELLED sebelumnya (idempoten, tanpa efek)
+}
+
 // HoldItem adalah input untuk HoldStock.
 type HoldItem struct {
 	CategoryID string

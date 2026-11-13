@@ -134,6 +134,8 @@ type SlotReleasedEvent struct {
 	BookingID string `json:"bookingId"`
 	EventID   string `json:"eventId"`
 	Reason    string `json:"reason"` // PAID | BOOKING_TTL | PAYMENT_TTL | CANCELLED
+	// QueueToken (opsional): bila ada, queue-service melepas kursi token itu lebih awal.
+	QueueToken string `json:"queueToken,omitempty"`
 }
 
 type PaymentSucceededEvent struct {

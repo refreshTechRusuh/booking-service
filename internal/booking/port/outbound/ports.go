@@ -3,10 +3,16 @@ package outbound
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/dto"
 	"github.com/refreshTechRusuh/booking-service/internal/booking/domain/entity"
 )
+
+// ErrBookingNotHeld dikembalikan ExpireBookingTx bila booking sudah tidak HELD
+// (mis. keburu PAID/CANCELLED): tidak ada stok yang dilepas dan tidak ada event dipublish.
+var ErrBookingNotHeld = errors.New("booking is not HELD")
 
 // Tx adalah abstraksi transaksi DB.
 // Implementasinya adalah pgx.Tx di infra/db; di test bisa pakai mock.
@@ -43,6 +49,12 @@ type IBookingRepository interface {
 	// Transaksi dikelola di sini agar usecase tidak perlu pool.Begin langsung (dan bisa ditest tanpa DB).
 	// Mengembalikan items yang di-release untuk Kafka payload.
 	ExpireBookingTx(ctx context.Context, bookingID string) ([]entity.BookingItem, error)
+
+	// CancelBookingTx membatalkan booking HELD milik user: lock baris booking (FOR UPDATE),
+	// tolak bila PAID (BookingPaid), EXPIRED (BookingExpired) atau sudah ada payment
+	// PENDING/SUCCESS (PaymentInProgress), lalu UPDATE status=CANCELLED + ReleaseStock
+	// dalam satu transaksi. Sudah CANCELLED → AlreadyCancelled=true tanpa efek (idempoten).
+	CancelBookingTx(ctx context.Context, bookingID string) (entity.CancelResult, error)
 }
 
 // IStockRepository mengelola perubahan available di ticket_category.
@@ -78,6 +90,16 @@ type ICacheRepository interface {
 	ValidateAccessToken(ctx context.Context, tokenStr string) (*AccessTokenClaims, error)
 	PublishStockChanged(ctx context.Context, eventID string, payload []byte) error
 	SubscribeStockChanged(ctx context.Context, eventID string) (<-chan []byte, func(), error)
+
+	// StoreBookingQueueToken menyimpan queueToken milik booking (best-effort) agar cancel
+	// bisa melepas kursi antrian walau Access Token sudah kedaluwarsa.
+	StoreBookingQueueToken(ctx context.Context, bookingID, queueToken string, ttl time.Duration) error
+	// GetBookingQueueToken mengembalikan queueToken booking ("" bila tidak ada).
+	GetBookingQueueToken(ctx context.Context, bookingID string) (string, error)
+	// RevokeQueueToken menandai queueToken tidak boleh dipakai membuat booking lagi.
+	RevokeQueueToken(ctx context.Context, queueToken string, ttl time.Duration) error
+	// IsQueueTokenRevoked true bila queueToken sudah dicabut.
+	IsQueueTokenRevoked(ctx context.Context, queueToken string) (bool, error)
 }
 
 // IEventServiceClient memanggil event-service via HTTP internal API.

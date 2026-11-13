@@ -29,6 +29,14 @@ type mockBookingUsecase struct {
 	createFn      func(ctx context.Context, req dto.CreateBookingRequest) (dto.CreateBookingResponse, error)
 	getFn         func(ctx context.Context, bookingID string) (dto.BookingStatusResponse, error)
 	streamStockFn func(ctx context.Context, eventID string) (<-chan dto.StockBatchEvent, error)
+	cancelFn      func(ctx context.Context, bookingID string) (dto.CancelBookingResponse, error)
+}
+
+func (m *mockBookingUsecase) CancelBooking(ctx context.Context, bookingID string) (dto.CancelBookingResponse, error) {
+	if m.cancelFn != nil {
+		return m.cancelFn(ctx, bookingID)
+	}
+	return dto.CancelBookingResponse{BookingID: bookingID, Status: "CANCELLED"}, nil
 }
 
 func (m *mockBookingUsecase) CreateBooking(ctx context.Context, req dto.CreateBookingRequest) (dto.CreateBookingResponse, error) {
@@ -328,4 +336,56 @@ func TestNewWiredHandlerWithUC_nilDeps(t *testing.T) {
 	h, uc := bookinghttp.NewWiredHandlerWithUC(context.Background(), cfg, nil, nil, nil)
 	assert.NotNil(t, h)
 	assert.NotNil(t, uc)
+}
+
+// ---- POST /api/booking/v1/{bookingId}/cancel --------------------------------
+
+func doCancel(mux *http.ServeMux, bookingID, paymentToken string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/booking/v1/"+bookingID+"/cancel", nil)
+	if paymentToken != "" {
+		req.Header.Set("X-Payment-Token", paymentToken)
+	}
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCancelBooking_ShouldReturn200_WhenPaymentTokenMatches(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{})
+	rec := doCancel(mux, "bkg-1", makePaymentToken(t, "bkg-1", "evt-1"))
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "CANCELLED")
+}
+
+func TestCancelBooking_ShouldReturn401_WhenNoPaymentToken(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{})
+	assert.Equal(t, http.StatusUnauthorized, doCancel(mux, "bkg-1", "").Code)
+}
+
+func TestCancelBooking_ShouldReturn403_WhenTokenBelongsToOtherBooking(t *testing.T) {
+	called := false
+	mux := setupBookingRouter(&mockBookingUsecase{cancelFn: func(context.Context, string) (dto.CancelBookingResponse, error) {
+		called = true
+		return dto.CancelBookingResponse{}, nil
+	}})
+	rec := doCancel(mux, "bkg-2", makePaymentToken(t, "bkg-1", "evt-1"))
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.False(t, called, "usecase tidak boleh dipanggil")
+}
+
+func TestCancelBooking_ShouldReturn409_WhenPaymentInProgress(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{cancelFn: func(context.Context, string) (dto.CancelBookingResponse, error) {
+		return dto.CancelBookingResponse{}, apperror.PaymentInProgress()
+	}})
+	rec := doCancel(mux, "bkg-1", makePaymentToken(t, "bkg-1", "evt-1"))
+	assert.Equal(t, http.StatusConflict, rec.Code)
+}
+
+func TestGetBooking_ShouldReturn403_WhenTokenBelongsToOtherBooking(t *testing.T) {
+	mux := setupBookingRouter(&mockBookingUsecase{})
+	req := httptest.NewRequest(http.MethodGet, "/api/booking/v1/bkg-2", nil)
+	req.Header.Set("X-Payment-Token", makePaymentToken(t, "bkg-1", "evt-1"))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
