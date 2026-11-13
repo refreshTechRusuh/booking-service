@@ -29,7 +29,7 @@ func TestCORS_ShouldAllowCustomTokenHeaders_WhenPreflight(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, "http://localhost:3000", rec.Header().Get("Access-Control-Allow-Origin"))
 	allowed := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers"))
-	for _, hdr := range []string{"x-access-token", "x-payment-token", "authorization", "content-type", "x-transaction-id"} {
+	for _, hdr := range []string{"x-access-token", "x-payment-token", "authorization", "content-type", "x-transaction-id", "cache-control", "last-event-id", "accept"} {
 		assert.Contains(t, allowed, hdr)
 	}
 }
